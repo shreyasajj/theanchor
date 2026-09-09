@@ -11524,8 +11524,22 @@ and build the rows inside `refresh()`:
                 }
 ```
 
-Pass `usage = usage` into the `DashboardUiState`. In `MainActivity`, supply
-`appLabels = { installedApps.launchableApps().associate { it.packageName to it.label } }`.
+Pass `usage = usage` into the `DashboardUiState`. In `MainActivity`, add
+
+```kotlin
+    @Inject lateinit var limitGate: LimitGate
+```
+
+(`appLimitDao` was already added in Task 33) and extend the `DashboardViewModel`
+factory with the three new arguments:
+
+```kotlin
+                    limitGate = limitGate,
+                    appLimitDao = appLimitDao,
+                    appLabels = {
+                        installedApps.launchableApps().associate { it.packageName to it.label }
+                    },
+```
 
 In `DashboardScreen.kt`, add a card above "Today":
 
