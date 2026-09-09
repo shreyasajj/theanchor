@@ -8366,3 +8366,3281 @@ Phase 8  Task 24                optional Device Owner kiosk
 
 The app is first genuinely usable after Task 22. Tasks 1–15 build and test
 without any Android device at all.
+
+---
+
+# Part II — Usage Limits, Note Formats, Kill-Switch Failure Mode
+
+**Spec:** `docs/superpowers/specs/2026-09-09-usage-limits-design.md`
+
+Tasks 25–35 extend the app built by Tasks 1–24. They are written as additions
+rather than edits so nothing above needs renumbering; each names the earlier
+file it modifies. Execute them **after Task 22** (the app is usable then) —
+Tasks 23 and 24 are device verification and the optional kiosk mode, and can
+run before or after Part II.
+
+## Global Constraints (Part II)
+
+- Everything in the Part I constraints still applies, in particular fail-open
+  and the injected `Clock`.
+- **No usage counters.** Elapsed time, open counts and last-close time are
+  derived from `UsageStatsManager.queryEvents()` at decision time. Never
+  persist a running total.
+- Usage limits obey the remote kill switch exactly like every other blocking
+  path.
+- The emergency allowlist outranks usage limits: `ForegroundAppDecider` runs
+  first and its `Ignore` is final.
+
+---
+
+### Task 25: New settings and the kill-switch failure mode
+
+**Files:**
+- Modify: `app/src/main/java/com/anchor/data/settings/AnchorSettings.kt` (Task 4)
+- Modify: `app/src/main/java/com/anchor/data/settings/SettingsRepository.kt` (Task 4)
+- Modify: `app/src/main/java/com/anchor/data/ha/KillSwitch.kt` (Task 7)
+- Modify: `app/src/main/java/com/anchor/domain/MorningGate.kt` (Task 12)
+- Modify: `app/src/main/java/com/anchor/domain/EveningGate.kt` (Task 13)
+- Test: `app/src/test/java/com/anchor/data/ha/KillSwitchFailOpenTest.kt`
+- Test: extend `app/src/test/java/com/anchor/data/settings/SettingsRepositoryTest.kt`
+
+**Interfaces:**
+- Consumes: `AnchorSettings`, `SettingsRepository` (Task 4), `KillSwitch`, `OverrideStatus` (Task 7).
+- Produces:
+  - `enum class NoteFormat { PLAIN, OBSIDIAN }` in `com.anchor.data.export`
+  - Three new `AnchorSettings` fields: `dayResetMinute: Int = 4 * 60`, `killSwitchFailOpenOnOutage: Boolean = false`, `noteFormat: NoteFormat = NoteFormat.PLAIN`
+  - **Changed signature:** `KillSwitch.isBlockingDisabled(status: OverrideStatus, settings: AnchorSettings): Boolean`
+
+- [ ] **Step 1: Write the failing test**
+
+`app/src/test/java/com/anchor/data/ha/KillSwitchFailOpenTest.kt`:
+
+```kotlin
+package com.anchor.data.ha
+
+import com.anchor.data.settings.AnchorSettings
+import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.test.runTest
+import org.junit.Test
+
+class KillSwitchFailOpenTest {
+
+    private class FakeClient(private val result: HaResult) : HomeAssistantClient(NoApi) {
+        override suspend fun fetchState(baseUrl: String, token: String, entityId: String) = result
+        private object NoApi : HomeAssistantApi {
+            override suspend fun state(url: String, authorization: String) = error("unused")
+        }
+    }
+
+    private val switch = KillSwitch(FakeClient(HaResult.Unavailable))
+
+    private val failClosed = AnchorSettings(killSwitchFailOpenOnOutage = false)
+    private val failOpen = AnchorSettings(killSwitchFailOpenOnOutage = true)
+
+    @Test
+    fun `ACTIVE always disables blocking, whatever the flag`() {
+        assertThat(switch.isBlockingDisabled(OverrideStatus.ACTIVE, failClosed)).isTrue()
+        assertThat(switch.isBlockingDisabled(OverrideStatus.ACTIVE, failOpen)).isTrue()
+    }
+
+    @Test
+    fun `INACTIVE never disables blocking, whatever the flag`() {
+        assertThat(switch.isBlockingDisabled(OverrideStatus.INACTIVE, failClosed)).isFalse()
+        assertThat(switch.isBlockingDisabled(OverrideStatus.INACTIVE, failOpen)).isFalse()
+    }
+
+    @Test
+    fun `UNKNOWN does not disable blocking by default`() {
+        assertThat(switch.isBlockingDisabled(OverrideStatus.UNKNOWN, failClosed)).isFalse()
+    }
+
+    @Test
+    fun `UNKNOWN disables blocking when the user opts in`() {
+        assertThat(switch.isBlockingDisabled(OverrideStatus.UNKNOWN, failOpen)).isTrue()
+    }
+
+    @Test
+    fun `an unreachable Home Assistant with fail-open on skips the morning lock`() = runTest {
+        // Regression guard for the whole point of the flag: with it on, an
+        // outage must reach MorningGate as OVERRIDE_ACTIVE, not as a location
+        // failure that happens to skip for a different reason.
+        val status = switch.check(
+            failOpen.copy(
+                haBaseUrl = "http://ha.local:8123",
+                haToken = "t",
+                killSwitchEnabled = true,
+                killSwitchEntityId = "input_boolean.anchor_override",
+            )
+        )
+        assertThat(status).isEqualTo(OverrideStatus.UNKNOWN)
+        assertThat(switch.isBlockingDisabled(status, failOpen)).isTrue()
+    }
+}
+```
+
+Append to `SettingsRepositoryTest.kt`:
+
+```kotlin
+    @Test
+    fun `new Part II settings have the documented defaults`() = runTest {
+        val s = repo.current()
+        assertThat(s.dayResetMinute).isEqualTo(4 * 60)          // 04:00
+        assertThat(s.killSwitchFailOpenOnOutage).isFalse()
+        assertThat(s.noteFormat).isEqualTo(com.anchor.data.export.NoteFormat.PLAIN)
+    }
+
+    @Test
+    fun `new Part II settings round-trip`() = runTest {
+        repo.update {
+            it.copy(
+                dayResetMinute = 3 * 60 + 30,
+                killSwitchFailOpenOnOutage = true,
+                noteFormat = com.anchor.data.export.NoteFormat.OBSIDIAN,
+            )
+        }
+        val s = repo.current()
+        assertThat(s.dayResetMinute).isEqualTo(210)
+        assertThat(s.killSwitchFailOpenOnOutage).isTrue()
+        assertThat(s.noteFormat).isEqualTo(com.anchor.data.export.NoteFormat.OBSIDIAN)
+    }
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `./gradlew :app:test --tests 'com.anchor.data.ha.KillSwitchFailOpenTest'`
+Expected: FAIL — `No value passed for parameter 'settings'` / unresolved
+`killSwitchFailOpenOnOutage`.
+
+- [ ] **Step 3: Add the fields to `AnchorSettings.kt`**
+
+Add `import com.anchor.data.export.NoteFormat`, then inside the data class:
+
+```kotlin
+    /**
+     * When usage limits reset. Default 04:00 rather than midnight so a late
+     * night does not silently consume the next day's budget.
+     */
+    val dayResetMinute: Int = 4 * 60,
+
+    /**
+     * When true, an unreachable Home Assistant counts as an active override
+     * and all blocking is skipped. Off by default: turning it on makes
+     * losing network access a one-gesture bypass.
+     */
+    val killSwitchFailOpenOnOutage: Boolean = false,
+
+    val noteFormat: NoteFormat = NoteFormat.PLAIN,
+```
+
+Create `app/src/main/java/com/anchor/data/export/NoteFormat.kt`:
+
+```kotlin
+package com.anchor.data.export
+
+/** How the daily Markdown file is shaped. See Task 34. */
+enum class NoteFormat {
+    /** Exactly the format in AGENTS.md §5. */
+    PLAIN,
+
+    /** PLAIN plus YAML frontmatter and a previous-day wikilink. */
+    OBSIDIAN,
+}
+```
+
+- [ ] **Step 4: Persist them in `SettingsRepository.kt`**
+
+Add to `object Keys`:
+
+```kotlin
+        val DAY_RESET = intPreferencesKey("day_reset_minute")
+        val KILL_FAIL_OPEN = booleanPreferencesKey("kill_fail_open")
+        val NOTE_FORMAT = stringPreferencesKey("note_format")
+```
+
+Add to the `update` block:
+
+```kotlin
+            prefs[Keys.DAY_RESET] = next.dayResetMinute
+            prefs[Keys.KILL_FAIL_OPEN] = next.killSwitchFailOpenOnOutage
+            prefs[Keys.NOTE_FORMAT] = next.noteFormat.name
+```
+
+Add to `toSettings()`:
+
+```kotlin
+            dayResetMinute = this[Keys.DAY_RESET] ?: d.dayResetMinute,
+            killSwitchFailOpenOnOutage = this[Keys.KILL_FAIL_OPEN] ?: d.killSwitchFailOpenOnOutage,
+            noteFormat = this[Keys.NOTE_FORMAT]?.toNoteFormat() ?: d.noteFormat,
+```
+
+And the parser, beside `toLocationMode`:
+
+```kotlin
+    private fun String.toNoteFormat(): NoteFormat =
+        runCatching { NoteFormat.valueOf(this) }.getOrDefault(NoteFormat.PLAIN)
+```
+
+- [ ] **Step 5: Change `KillSwitch.isBlockingDisabled`**
+
+Replace the method in `KillSwitch.kt`:
+
+```kotlin
+    /**
+     * @param settings needed for [AnchorSettings.killSwitchFailOpenOnOutage] —
+     *   taking it as a parameter means no caller can forget the flag exists.
+     */
+    fun isBlockingDisabled(status: OverrideStatus, settings: AnchorSettings): Boolean =
+        status == OverrideStatus.ACTIVE ||
+            (status == OverrideStatus.UNKNOWN && settings.killSwitchFailOpenOnOutage)
+```
+
+- [ ] **Step 6: Update the two call sites**
+
+In `MorningGate.kt` and `EveningGate.kt`, replace
+
+```kotlin
+        if (killSwitch.isBlockingDisabled(killSwitch.check(settings))) {
+```
+
+with
+
+```kotlin
+        if (killSwitch.isBlockingDisabled(killSwitch.check(settings), settings)) {
+```
+
+In `KillSwitchTest.kt` (Task 7), update the `only ACTIVE disables blocking`
+test to pass `AnchorSettings()` as the second argument, and the
+`an HA outage is UNKNOWN` test likewise. Both keep their existing assertions —
+the default settings preserve the old behaviour, which is the point.
+
+- [ ] **Step 7: Run the tests to verify they pass**
+
+Run: `./gradlew :app:test`
+Expected: PASS — the new tests plus every Part I test, unchanged.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add -A
+git commit -m "feat: make Home Assistant outage handling configurable for the kill switch"
+```
+
+---
+
+### Task 26: `AppLimit` entity and DAO
+
+**Files:**
+- Create: `app/src/main/java/com/anchor/data/usage/AppLimit.kt`
+- Create: `app/src/main/java/com/anchor/data/usage/AppLimitDao.kt`
+- Modify: `app/src/main/java/com/anchor/data/db/AnchorDatabase.kt` (Task 3) — add the entity, bump `version` to 2
+- Modify: `app/src/main/java/com/anchor/di/AppModule.kt` — provide the DAO
+- Test: `app/src/test/java/com/anchor/data/usage/AppLimitDaoTest.kt`
+
+**Interfaces:**
+- Consumes: `AnchorDatabase` (Task 3).
+- Produces:
+  - `data class AppLimit(packageName: String, enabled: Boolean, dailyMinutes: Int?, dailyOpens: Int?, cooldownMinutes: Int?, sessionMinutes: Int?, preOpenDelaySeconds: Int)` with `val hasAnyLimit: Boolean`
+  - `interface AppLimitDao` with `suspend fun find(packageName: String): AppLimit?`, `fun observeAll(): Flow<List<AppLimit>>`, `suspend fun all(): List<AppLimit>`, `suspend fun upsert(limit: AppLimit)`, `suspend fun delete(packageName: String)`
+
+- [ ] **Step 1: Write the failing test**
+
+`app/src/test/java/com/anchor/data/usage/AppLimitDaoTest.kt`:
+
+```kotlin
+package com.anchor.data.usage
+
+import androidx.room.Room
+import androidx.test.core.app.ApplicationProvider
+import com.anchor.data.db.AnchorDatabase
+import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.test.runTest
+import org.junit.After
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+
+@RunWith(RobolectricTestRunner::class)
+class AppLimitDaoTest {
+
+    private lateinit var db: AnchorDatabase
+    private lateinit var dao: AppLimitDao
+
+    private val youtube = "com.google.android.youtube"
+
+    @Before
+    fun setUp() {
+        db = Room.inMemoryDatabaseBuilder(
+            ApplicationProvider.getApplicationContext(),
+            AnchorDatabase::class.java,
+        ).allowMainThreadQueries().build()
+        dao = db.appLimitDao()
+    }
+
+    @After
+    fun tearDown() = db.close()
+
+    @Test
+    fun `returns null for an app with no limit configured`() = runTest {
+        assertThat(dao.find(youtube)).isNull()
+    }
+
+    @Test
+    fun `stores and reads back every field`() = runTest {
+        dao.upsert(
+            AppLimit(
+                packageName = youtube,
+                dailyMinutes = 30,
+                dailyOpens = 5,
+                cooldownMinutes = 20,
+                sessionMinutes = 10,
+                preOpenDelaySeconds = 30,
+            )
+        )
+
+        val found = dao.find(youtube)!!
+        assertThat(found.dailyMinutes).isEqualTo(30)
+        assertThat(found.dailyOpens).isEqualTo(5)
+        assertThat(found.cooldownMinutes).isEqualTo(20)
+        assertThat(found.sessionMinutes).isEqualTo(10)
+        assertThat(found.preOpenDelaySeconds).isEqualTo(30)
+        assertThat(found.enabled).isTrue()
+    }
+
+    @Test
+    fun `all fields are optional and default to no limit`() = runTest {
+        dao.upsert(AppLimit(packageName = youtube))
+
+        val found = dao.find(youtube)!!
+        assertThat(found.dailyMinutes).isNull()
+        assertThat(found.dailyOpens).isNull()
+        assertThat(found.cooldownMinutes).isNull()
+        assertThat(found.sessionMinutes).isNull()
+        assertThat(found.preOpenDelaySeconds).isEqualTo(0)
+        assertThat(found.hasAnyLimit).isFalse()
+    }
+
+    @Test
+    fun `hasAnyLimit is true when any single mechanic is set`() {
+        val base = AppLimit(packageName = youtube)
+        assertThat(base.copy(dailyMinutes = 30).hasAnyLimit).isTrue()
+        assertThat(base.copy(dailyOpens = 5).hasAnyLimit).isTrue()
+        assertThat(base.copy(cooldownMinutes = 20).hasAnyLimit).isTrue()
+        assertThat(base.copy(sessionMinutes = 10).hasAnyLimit).isTrue()
+        assertThat(base.copy(preOpenDelaySeconds = 30).hasAnyLimit).isTrue()
+    }
+
+    @Test
+    fun `upserting the same package replaces rather than duplicating`() = runTest {
+        dao.upsert(AppLimit(packageName = youtube, dailyMinutes = 30))
+        dao.upsert(AppLimit(packageName = youtube, dailyMinutes = 15))
+
+        assertThat(dao.all()).hasSize(1)
+        assertThat(dao.find(youtube)!!.dailyMinutes).isEqualTo(15)
+    }
+
+    @Test
+    fun `deleting removes the row`() = runTest {
+        dao.upsert(AppLimit(packageName = youtube, dailyMinutes = 30))
+        dao.delete(youtube)
+        assertThat(dao.find(youtube)).isNull()
+    }
+
+    @Test
+    fun `all returns every configured app`() = runTest {
+        dao.upsert(AppLimit(packageName = youtube, dailyMinutes = 30))
+        dao.upsert(AppLimit(packageName = "com.instagram.android", dailyOpens = 3))
+
+        assertThat(dao.all().map { it.packageName })
+            .containsExactly(youtube, "com.instagram.android")
+    }
+}
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `./gradlew :app:test --tests 'com.anchor.data.usage.AppLimitDaoTest'`
+Expected: FAIL — `Unresolved reference: AppLimit`.
+
+- [ ] **Step 3: Write `AppLimit.kt`**
+
+```kotlin
+package com.anchor.data.usage
+
+import androidx.room.Entity
+import androidx.room.PrimaryKey
+
+/**
+ * Per-app usage limits. Every mechanic is independent and optional: null
+ * (or 0 for the pause) means "no limit of this kind".
+ *
+ * Limits apply 24 hours a day and are unrelated to the Evening Anchor window.
+ */
+@Entity(tableName = "app_limit")
+data class AppLimit(
+    @PrimaryKey val packageName: String,
+    val enabled: Boolean = true,
+
+    /** Total foreground minutes allowed per day. */
+    val dailyMinutes: Int? = null,
+
+    /** Number of launches allowed per day. */
+    val dailyOpens: Int? = null,
+
+    /** Minimum gap after closing before the app may be reopened. */
+    val cooldownMinutes: Int? = null,
+
+    /** Maximum length of any single session, enforced mid-use. */
+    val sessionMinutes: Int? = null,
+
+    /** Forced wait before the app opens. 0 disables the pause screen. */
+    val preOpenDelaySeconds: Int = 0,
+) {
+    val hasAnyLimit: Boolean
+        get() = dailyMinutes != null || dailyOpens != null || cooldownMinutes != null ||
+            sessionMinutes != null || preOpenDelaySeconds > 0
+}
+```
+
+- [ ] **Step 4: Write `AppLimitDao.kt`**
+
+```kotlin
+package com.anchor.data.usage
+
+import androidx.room.Dao
+import androidx.room.Insert
+import androidx.room.OnConflictStrategy
+import androidx.room.Query
+import kotlinx.coroutines.flow.Flow
+
+@Dao
+interface AppLimitDao {
+
+    @Query("SELECT * FROM app_limit WHERE packageName = :packageName LIMIT 1")
+    suspend fun find(packageName: String): AppLimit?
+
+    @Query("SELECT * FROM app_limit ORDER BY packageName ASC")
+    fun observeAll(): Flow<List<AppLimit>>
+
+    @Query("SELECT * FROM app_limit ORDER BY packageName ASC")
+    suspend fun all(): List<AppLimit>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(limit: AppLimit)
+
+    @Query("DELETE FROM app_limit WHERE packageName = :packageName")
+    suspend fun delete(packageName: String)
+}
+```
+
+- [ ] **Step 5: Register the entity and provide the DAO**
+
+In `AnchorDatabase.kt`, add the import, add `AppLimit::class` to `entities`,
+bump `version = 2`, and add:
+
+```kotlin
+    abstract fun appLimitDao(): AppLimitDao
+```
+
+Since the app is personal and unreleased, add
+`.fallbackToDestructiveMigration()` to the builder in `AppModule.provideDatabase`
+rather than writing a migration. **Note the consequence in the commit message:**
+existing daily logs are dropped on first run after this change. If you have real
+data on the device already, write a proper `Migration(1, 2)` that only runs
+`CREATE TABLE app_limit (...)` instead.
+
+In `AppModule.kt`:
+
+```kotlin
+    @Provides fun provideAppLimitDao(db: AnchorDatabase): AppLimitDao = db.appLimitDao()
+```
+
+- [ ] **Step 6: Run the test to verify it passes**
+
+Run: `./gradlew :app:test --tests 'com.anchor.data.usage.AppLimitDaoTest'`
+Expected: PASS (7 tests).
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add -A
+git commit -m "feat: add per-app usage limit configuration table"
+```
+
+---
+
+### Task 27: Day-boundary arithmetic for the customizable reset
+
+**Files:**
+- Modify: `app/src/main/java/com/anchor/domain/AnchorDate.kt` (Task 8)
+- Test: `app/src/test/java/com/anchor/domain/AnchorDateUsageTest.kt`
+
+**Interfaces:**
+- Consumes: injected `Clock` (Task 1).
+- Produces, on `AnchorDate`:
+  - `fun usageDay(dayResetMinute: Int): String`
+  - `fun usageDayStartMillis(dayResetMinute: Int): Long`
+  - `fun nextUsageResetMillis(dayResetMinute: Int): Long`
+  - `fun nowMillis(): Long`
+
+- [ ] **Step 1: Write the failing test**
+
+`app/src/test/java/com/anchor/domain/AnchorDateUsageTest.kt`:
+
+```kotlin
+package com.anchor.domain
+
+import com.google.common.truth.Truth.assertThat
+import org.junit.Test
+import java.time.Clock
+import java.time.Instant
+import java.time.LocalDateTime
+import java.time.ZoneId
+
+class AnchorDateUsageTest {
+
+    private val zone = ZoneId.of("America/Los_Angeles")
+    private val reset = 4 * 60   // 04:00
+
+    private fun at(local: String) = AnchorDate(
+        Clock.fixed(LocalDateTime.parse(local).atZone(zone).toInstant(), zone)
+    )
+
+    private fun localOf(millis: Long) =
+        LocalDateTime.ofInstant(Instant.ofEpochMilli(millis), zone)
+
+    @Test
+    fun `mid-afternoon belongs to the current calendar day`() {
+        assertThat(at("2026-09-09T15:00:00").usageDay(reset)).isEqualTo("2026-09-09")
+    }
+
+    @Test
+    fun `just after the reset belongs to the current day`() {
+        assertThat(at("2026-09-09T04:00:00").usageDay(reset)).isEqualTo("2026-09-09")
+    }
+
+    @Test
+    fun `just before the reset still belongs to the previous day`() {
+        assertThat(at("2026-09-09T03:59:00").usageDay(reset)).isEqualTo("2026-09-08")
+    }
+
+    @Test
+    fun `1am belongs to the previous day, so a late night shares its budget`() {
+        assertThat(at("2026-09-09T01:00:00").usageDay(reset)).isEqualTo("2026-09-08")
+    }
+
+    @Test
+    fun `midnight reset makes the usage day the calendar day`() {
+        assertThat(at("2026-09-09T01:00:00").usageDay(dayResetMinute = 0))
+            .isEqualTo("2026-09-09")
+    }
+
+    @Test
+    fun `day start is the reset time of the usage day`() {
+        val start = at("2026-09-09T15:00:00").usageDayStartMillis(reset)
+        assertThat(localOf(start)).isEqualTo(LocalDateTime.parse("2026-09-09T04:00:00"))
+    }
+
+    @Test
+    fun `day start before the reset points at yesterday's reset`() {
+        val start = at("2026-09-09T01:00:00").usageDayStartMillis(reset)
+        assertThat(localOf(start)).isEqualTo(LocalDateTime.parse("2026-09-08T04:00:00"))
+    }
+
+    @Test
+    fun `next reset is tomorrow's reset time from the afternoon`() {
+        val next = at("2026-09-09T15:00:00").nextUsageResetMillis(reset)
+        assertThat(localOf(next)).isEqualTo(LocalDateTime.parse("2026-09-10T04:00:00"))
+    }
+
+    @Test
+    fun `next reset is later today when it is before the reset`() {
+        val next = at("2026-09-09T01:00:00").nextUsageResetMillis(reset)
+        assertThat(localOf(next)).isEqualTo(LocalDateTime.parse("2026-09-09T04:00:00"))
+    }
+
+    @Test
+    fun `next reset is always strictly in the future`() {
+        listOf("2026-09-09T03:59:59", "2026-09-09T04:00:00", "2026-09-09T23:59:59")
+            .forEach { now ->
+                val date = at(now)
+                assertThat(date.nextUsageResetMillis(reset)).isGreaterThan(date.nowMillis())
+            }
+    }
+
+    @Test
+    fun `the window from day start to next reset is exactly 24 hours`() {
+        val date = at("2026-09-09T15:00:00")
+        val span = date.nextUsageResetMillis(reset) - date.usageDayStartMillis(reset)
+        assertThat(span).isEqualTo(24L * 60 * 60 * 1000)
+    }
+
+    @Test
+    fun `day start rolls back across a month boundary`() {
+        val start = at("2026-10-01T02:00:00").usageDayStartMillis(reset)
+        assertThat(localOf(start)).isEqualTo(LocalDateTime.parse("2026-09-30T04:00:00"))
+    }
+}
+```
+
+> The 24-hour assertion holds because the test zone has no DST transition on
+> that date. Across a spring-forward boundary the span is 23 hours, which is
+> correct behaviour — the window is "reset to reset", not "86400000 ms".
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `./gradlew :app:test --tests 'com.anchor.domain.AnchorDateUsageTest'`
+Expected: FAIL — `Unresolved reference: usageDay`.
+
+- [ ] **Step 3: Add the methods to `AnchorDate.kt`**
+
+```kotlin
+    fun nowMillis(): Long = clock.millis()
+
+    /**
+     * Which usage day "now" falls in. Times before [dayResetMinute] belong to
+     * the previous calendar day, so a session at 01:00 draws on the same
+     * budget as the evening that preceded it.
+     */
+    fun usageDay(dayResetMinute: Int): String {
+        val current = now()
+        val minute = current.hour * 60 + current.minute
+        val date = if (minute < dayResetMinute) {
+            current.toLocalDate().minusDays(1)
+        } else {
+            current.toLocalDate()
+        }
+        return format(date)
+    }
+
+    /** The instant the current usage day began. */
+    fun usageDayStartMillis(dayResetMinute: Int): Long =
+        LocalDate.parse(usageDay(dayResetMinute))
+            .atTime(dayResetMinute / 60, dayResetMinute % 60)
+            .atZone(clock.zone)
+            .toInstant()
+            .toEpochMilli()
+
+    /** The instant the current usage day ends and limits reset. */
+    fun nextUsageResetMillis(dayResetMinute: Int): Long =
+        LocalDate.parse(usageDay(dayResetMinute))
+            .plusDays(1)
+            .atTime(dayResetMinute / 60, dayResetMinute % 60)
+            .atZone(clock.zone)
+            .toInstant()
+            .toEpochMilli()
+```
+
+Add the import `java.time.LocalDate` if it is not already present.
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+Run: `./gradlew :app:test --tests 'com.anchor.domain.AnchorDateUsageTest'`
+Expected: PASS (12 tests).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add -A
+git commit -m "feat: add customizable usage-day reset arithmetic"
+```
+
+---
+
+### Task 28: `UsageCalculator` — deriving usage from raw events
+
+This is the heart of the limits subsystem and the task with the most tests.
+It is pure: no Android, no clock, no I/O.
+
+**Files:**
+- Create: `app/src/main/java/com/anchor/data/usage/UsageEvent.kt`
+- Create: `app/src/main/java/com/anchor/data/usage/UsageCalculator.kt`
+- Test: `app/src/test/java/com/anchor/data/usage/UsageCalculatorTest.kt`
+
+**Interfaces:**
+- Consumes: nothing.
+- Produces:
+  - `data class UsageEvent(packageName: String, type: Type, timestampMillis: Long)` with `enum class Type { FOREGROUND, BACKGROUND }`
+  - `data class AppUsageSummary(foregroundMillis: Long, opens: Int, lastForegroundEndAtMillis: Long?, currentSessionStartAtMillis: Long?)`
+  - `object UsageCalculator { const val OPEN_COALESCE_WINDOW_MILLIS = 60_000L; fun summarize(events, packageName, windowStartMillis, nowMillis): AppUsageSummary }`
+
+**Note on the event window.** `events` may extend *before* `windowStartMillis`.
+Time and open counts are measured from `windowStartMillis`, but
+`lastForegroundEndAtMillis` considers all events — a cooldown is a rolling gap
+and must survive the daily reset. Task 29's source deliberately queries a few
+hours before the day start for exactly this reason.
+
+- [ ] **Step 1: Write the failing test**
+
+`app/src/test/java/com/anchor/data/usage/UsageCalculatorTest.kt`:
+
+```kotlin
+package com.anchor.data.usage
+
+import com.google.common.truth.Truth.assertThat
+import org.junit.Test
+
+class UsageCalculatorTest {
+
+    private val app = "com.google.android.youtube"
+    private val minute = 60_000L
+
+    /** Day start at t=0 for readability; "now" supplied per test. */
+    private val windowStart = 0L
+
+    private fun fg(atMinutes: Long, pkg: String = app) =
+        UsageEvent(pkg, UsageEvent.Type.FOREGROUND, atMinutes * minute)
+
+    private fun bg(atMinutes: Long, pkg: String = app) =
+        UsageEvent(pkg, UsageEvent.Type.BACKGROUND, atMinutes * minute)
+
+    private fun summarize(events: List<UsageEvent>, nowMinutes: Long) =
+        UsageCalculator.summarize(events, app, windowStart, nowMinutes * minute)
+
+    @Test
+    fun `no events means no usage`() {
+        val s = summarize(emptyList(), nowMinutes = 60)
+
+        assertThat(s.foregroundMillis).isEqualTo(0)
+        assertThat(s.opens).isEqualTo(0)
+        assertThat(s.lastForegroundEndAtMillis).isNull()
+        assertThat(s.currentSessionStartAtMillis).isNull()
+    }
+
+    @Test
+    fun `one closed session counts its duration and one open`() {
+        val s = summarize(listOf(fg(10), bg(25)), nowMinutes = 60)
+
+        assertThat(s.foregroundMillis).isEqualTo(15 * minute)
+        assertThat(s.opens).isEqualTo(1)
+        assertThat(s.lastForegroundEndAtMillis).isEqualTo(25 * minute)
+        assertThat(s.currentSessionStartAtMillis).isNull()
+    }
+
+    @Test
+    fun `an open session accrues time up to now`() {
+        val s = summarize(listOf(fg(10)), nowMinutes = 40)
+
+        assertThat(s.foregroundMillis).isEqualTo(30 * minute)
+        assertThat(s.opens).isEqualTo(1)
+        assertThat(s.currentSessionStartAtMillis).isEqualTo(10 * minute)
+        assertThat(s.lastForegroundEndAtMillis).isNull()
+    }
+
+    @Test
+    fun `a session spanning the window start is clamped to it`() {
+        // Started 20 minutes before the reset, ended 10 minutes after.
+        val s = UsageCalculator.summarize(
+            events = listOf(fg(-20), bg(10)),
+            packageName = app,
+            windowStartMillis = 0L,
+            nowMillis = 60 * minute,
+        )
+
+        assertThat(s.foregroundMillis).isEqualTo(10 * minute)
+    }
+
+    @Test
+    fun `a session entirely before the window contributes no time or opens`() {
+        val s = UsageCalculator.summarize(
+            events = listOf(fg(-40), bg(-30)),
+            packageName = app,
+            windowStartMillis = 0L,
+            nowMillis = 60 * minute,
+        )
+
+        assertThat(s.foregroundMillis).isEqualTo(0)
+        assertThat(s.opens).isEqualTo(0)
+    }
+
+    @Test
+    fun `but a session before the window still sets the last close time`() {
+        // This is what makes a cooldown survive the daily reset.
+        val s = UsageCalculator.summarize(
+            events = listOf(fg(-40), bg(-30)),
+            packageName = app,
+            windowStartMillis = 0L,
+            nowMillis = 60 * minute,
+        )
+
+        assertThat(s.lastForegroundEndAtMillis).isEqualTo(-30 * minute)
+    }
+
+    @Test
+    fun `a duplicate FOREGROUND event does not start a second session`() {
+        val s = summarize(listOf(fg(10), fg(12), bg(20)), nowMinutes = 60)
+
+        assertThat(s.foregroundMillis).isEqualTo(10 * minute)
+        assertThat(s.opens).isEqualTo(1)
+    }
+
+    @Test
+    fun `a BACKGROUND with no matching FOREGROUND is ignored`() {
+        val s = summarize(listOf(bg(5), fg(10), bg(20)), nowMinutes = 60)
+
+        assertThat(s.foregroundMillis).isEqualTo(10 * minute)
+        assertThat(s.opens).isEqualTo(1)
+    }
+
+    @Test
+    fun `two sessions less than a minute apart count as one open`() {
+        // Pulling down the notification shade and dismissing it.
+        val s = UsageCalculator.summarize(
+            events = listOf(
+                fg(10), bg(20),
+                UsageEvent(app, UsageEvent.Type.FOREGROUND, 20 * minute + 15_000),
+                UsageEvent(app, UsageEvent.Type.BACKGROUND, 30 * minute),
+            ),
+            packageName = app,
+            windowStartMillis = windowStart,
+            nowMillis = 60 * minute,
+        )
+
+        assertThat(s.opens).isEqualTo(1)
+        // Time is still counted for both stretches.
+        assertThat(s.foregroundMillis).isEqualTo(10 * minute + (10 * minute - 15_000))
+    }
+
+    @Test
+    fun `two sessions more than a minute apart count as two opens`() {
+        val s = summarize(listOf(fg(10), bg(20), fg(30), bg(35)), nowMinutes = 60)
+
+        assertThat(s.opens).isEqualTo(2)
+        assertThat(s.foregroundMillis).isEqualTo(15 * minute)
+    }
+
+    @Test
+    fun `exactly the coalesce window apart counts as a new open`() {
+        val s = UsageCalculator.summarize(
+            events = listOf(
+                fg(10), bg(20),
+                UsageEvent(app, UsageEvent.Type.FOREGROUND, 20 * minute + 60_000),
+            ),
+            packageName = app,
+            windowStartMillis = windowStart,
+            nowMillis = 60 * minute,
+        )
+
+        assertThat(s.opens).isEqualTo(2)
+    }
+
+    @Test
+    fun `events for other packages are ignored entirely`() {
+        val s = summarize(
+            listOf(fg(10), fg(11, "com.instagram.android"), bg(12, "com.instagram.android"), bg(20)),
+            nowMinutes = 60,
+        )
+
+        assertThat(s.foregroundMillis).isEqualTo(10 * minute)
+        assertThat(s.opens).isEqualTo(1)
+    }
+
+    @Test
+    fun `unsorted input is handled`() {
+        val s = summarize(listOf(bg(20), fg(10)), nowMinutes = 60)
+
+        assertThat(s.foregroundMillis).isEqualTo(10 * minute)
+        assertThat(s.opens).isEqualTo(1)
+    }
+
+    @Test
+    fun `lastForegroundEndAt reports the most recent completed session`() {
+        val s = summarize(listOf(fg(10), bg(20), fg(30), bg(35)), nowMinutes = 60)
+        assertThat(s.lastForegroundEndAtMillis).isEqualTo(35 * minute)
+    }
+
+    @Test
+    fun `an open session does not overwrite the previous close time`() {
+        val s = summarize(listOf(fg(10), bg(20), fg(30)), nowMinutes = 40)
+
+        assertThat(s.lastForegroundEndAtMillis).isEqualTo(20 * minute)
+        assertThat(s.currentSessionStartAtMillis).isEqualTo(30 * minute)
+    }
+}
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `./gradlew :app:test --tests 'com.anchor.data.usage.UsageCalculatorTest'`
+Expected: FAIL — `Unresolved reference: UsageEvent`.
+
+- [ ] **Step 3: Write `UsageEvent.kt`**
+
+```kotlin
+package com.anchor.data.usage
+
+/**
+ * A foreground transition, normalised away from UsageStatsManager's event
+ * constants so the calculator stays pure and testable.
+ */
+data class UsageEvent(
+    val packageName: String,
+    val type: Type,
+    val timestampMillis: Long,
+) {
+    enum class Type { FOREGROUND, BACKGROUND }
+}
+
+/**
+ * What the app did within a usage-day window.
+ *
+ * @param foregroundMillis time in the foreground within the window
+ * @param opens launches within the window, coalescing brief re-entries
+ * @param lastForegroundEndAtMillis end of the most recent *completed*
+ *   session, considering events before the window too — a cooldown is a
+ *   rolling gap and must survive the daily reset
+ * @param currentSessionStartAtMillis non-null when the app is foreground now
+ */
+data class AppUsageSummary(
+    val foregroundMillis: Long = 0,
+    val opens: Int = 0,
+    val lastForegroundEndAtMillis: Long? = null,
+    val currentSessionStartAtMillis: Long? = null,
+)
+```
+
+- [ ] **Step 4: Write `UsageCalculator.kt`**
+
+```kotlin
+package com.anchor.data.usage
+
+/**
+ * Derives usage from a raw event list. Pure by design: the app deliberately
+ * keeps no counters, because counters drift, are lost when the process dies,
+ * and double-count when the accessibility service restarts mid-session.
+ */
+object UsageCalculator {
+
+    /**
+     * Two sessions closer together than this are one "open". Without it,
+     * glancing at the notification shade would burn an open.
+     */
+    const val OPEN_COALESCE_WINDOW_MILLIS = 60_000L
+
+    private data class Session(val start: Long, val end: Long?)
+
+    fun summarize(
+        events: List<UsageEvent>,
+        packageName: String,
+        windowStartMillis: Long,
+        nowMillis: Long,
+    ): AppUsageSummary {
+        val sessions = buildSessions(events, packageName)
+        if (sessions.isEmpty()) return AppUsageSummary()
+
+        var foregroundMillis = 0L
+        var opens = 0
+
+        sessions.forEachIndexed { index, session ->
+            // Time: clip the session to the window.
+            val effectiveStart = maxOf(session.start, windowStartMillis)
+            val effectiveEnd = minOf(session.end ?: nowMillis, nowMillis)
+            if (effectiveEnd > effectiveStart) {
+                foregroundMillis += effectiveEnd - effectiveStart
+            }
+
+            // Opens: only sessions that actually began inside the window,
+            // and only if they are not a quick re-entry into the previous one.
+            if (session.start >= windowStartMillis) {
+                val previousEnd = sessions.getOrNull(index - 1)?.end
+                val isNewOpen = previousEnd == null ||
+                    session.start - previousEnd >= OPEN_COALESCE_WINDOW_MILLIS
+                if (isNewOpen) opens++
+            }
+        }
+
+        return AppUsageSummary(
+            foregroundMillis = foregroundMillis,
+            opens = opens,
+            lastForegroundEndAtMillis = sessions.lastOrNull { it.end != null }?.end,
+            currentSessionStartAtMillis = sessions.lastOrNull()?.takeIf { it.end == null }?.start,
+        )
+    }
+
+    private fun buildSessions(events: List<UsageEvent>, packageName: String): List<Session> {
+        val ordered = events
+            .filter { it.packageName == packageName }
+            .sortedBy { it.timestampMillis }
+
+        val sessions = mutableListOf<Session>()
+        var openStart: Long? = null
+
+        ordered.forEach { event ->
+            when (event.type) {
+                // A second FOREGROUND with no BACKGROUND between is the same
+                // session — Android emits these for configuration changes.
+                UsageEvent.Type.FOREGROUND ->
+                    if (openStart == null) openStart = event.timestampMillis
+
+                UsageEvent.Type.BACKGROUND -> openStart?.let { start ->
+                    sessions += Session(start, event.timestampMillis)
+                    openStart = null
+                }
+            }
+        }
+        openStart?.let { sessions += Session(it, null) }
+        return sessions
+    }
+}
+```
+
+- [ ] **Step 5: Run the test to verify it passes**
+
+Run: `./gradlew :app:test --tests 'com.anchor.data.usage.UsageCalculatorTest'`
+Expected: PASS (15 tests).
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add -A
+git commit -m "feat: derive app usage from raw foreground events"
+```
+
+---
+
+### Task 29: `UsageStatsSource` — the Android query behind the seam
+
+**Files:**
+- Create: `app/src/main/java/com/anchor/data/usage/UsageStatsSource.kt`
+- Modify: `app/src/main/java/com/anchor/di/AppModule.kt`
+- Test: `app/src/test/java/com/anchor/data/usage/UsageEventMappingTest.kt`
+
+**Interfaces:**
+- Consumes: `UsageEvent` (Task 28).
+- Produces:
+  - `interface UsageStatsSource { suspend fun events(fromMillis: Long, toMillis: Long): List<UsageEvent> }`
+  - `class AndroidUsageStatsSource(context) : UsageStatsSource`
+  - `object UsageEventMapping { const val COOLDOWN_LOOKBACK_MILLIS = 6L * 60 * 60 * 1000; fun map(androidEventType: Int): UsageEvent.Type?; fun queryFrom(usageDayStartMillis: Long): Long }`
+
+- [ ] **Step 1: Write the failing test**
+
+`app/src/test/java/com/anchor/data/usage/UsageEventMappingTest.kt`:
+
+```kotlin
+package com.anchor.data.usage
+
+import android.app.usage.UsageEvents
+import com.google.common.truth.Truth.assertThat
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+
+@RunWith(RobolectricTestRunner::class)
+class UsageEventMappingTest {
+
+    @Test
+    fun `ACTIVITY_RESUMED maps to FOREGROUND`() {
+        assertThat(UsageEventMapping.map(UsageEvents.Event.ACTIVITY_RESUMED))
+            .isEqualTo(UsageEvent.Type.FOREGROUND)
+    }
+
+    @Test
+    fun `ACTIVITY_PAUSED maps to BACKGROUND`() {
+        assertThat(UsageEventMapping.map(UsageEvents.Event.ACTIVITY_PAUSED))
+            .isEqualTo(UsageEvent.Type.BACKGROUND)
+    }
+
+    @Test
+    fun `ACTIVITY_STOPPED maps to BACKGROUND`() {
+        assertThat(UsageEventMapping.map(UsageEvents.Event.ACTIVITY_STOPPED))
+            .isEqualTo(UsageEvent.Type.BACKGROUND)
+    }
+
+    @Test
+    fun `unrelated event types are dropped`() {
+        assertThat(UsageEventMapping.map(UsageEvents.Event.CONFIGURATION_CHANGE)).isNull()
+        assertThat(UsageEventMapping.map(UsageEvents.Event.USER_INTERACTION)).isNull()
+    }
+
+    @Test
+    fun `the query reaches back before the day start so cooldowns survive the reset`() {
+        val dayStart = 1_757_000_000_000L
+        val from = UsageEventMapping.queryFrom(dayStart)
+
+        assertThat(from).isLessThan(dayStart)
+        assertThat(dayStart - from).isEqualTo(UsageEventMapping.COOLDOWN_LOOKBACK_MILLIS)
+    }
+}
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `./gradlew :app:test --tests 'com.anchor.data.usage.UsageEventMappingTest'`
+Expected: FAIL — `Unresolved reference: UsageEventMapping`.
+
+- [ ] **Step 3: Write `UsageStatsSource.kt`**
+
+```kotlin
+package com.anchor.data.usage
+
+import android.app.usage.UsageEvents
+import android.app.usage.UsageStatsManager
+import android.content.Context
+import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import javax.inject.Inject
+import javax.inject.Singleton
+
+/** The seam that keeps UsageStatsManager out of every unit test. */
+interface UsageStatsSource {
+    /** Never throws; returns an empty list when usage access is not granted. */
+    suspend fun events(fromMillis: Long, toMillis: Long): List<UsageEvent>
+}
+
+object UsageEventMapping {
+
+    /**
+     * How far before the usage-day start to query. A cooldown is a rolling
+     * gap, so the last close may have happened before the daily reset and
+     * still matter. Six hours comfortably exceeds any sane cooldown.
+     */
+    const val COOLDOWN_LOOKBACK_MILLIS = 6L * 60 * 60 * 1000
+
+    fun queryFrom(usageDayStartMillis: Long): Long =
+        usageDayStartMillis - COOLDOWN_LOOKBACK_MILLIS
+
+    fun map(androidEventType: Int): UsageEvent.Type? = when (androidEventType) {
+        UsageEvents.Event.ACTIVITY_RESUMED -> UsageEvent.Type.FOREGROUND
+        UsageEvents.Event.ACTIVITY_PAUSED,
+        UsageEvents.Event.ACTIVITY_STOPPED -> UsageEvent.Type.BACKGROUND
+        else -> null
+    }
+}
+
+@Singleton
+class AndroidUsageStatsSource @Inject constructor(
+    @ApplicationContext private val context: Context,
+) : UsageStatsSource {
+
+    private val manager: UsageStatsManager =
+        context.getSystemService(UsageStatsManager::class.java)
+
+    override suspend fun events(fromMillis: Long, toMillis: Long): List<UsageEvent> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val result = mutableListOf<UsageEvent>()
+                val cursor = manager.queryEvents(fromMillis, toMillis)
+                val event = UsageEvents.Event()
+                while (cursor.hasNextEvent()) {
+                    cursor.getNextEvent(event)
+                    val type = UsageEventMapping.map(event.eventType) ?: continue
+                    val packageName = event.packageName ?: continue
+                    result += UsageEvent(packageName, type, event.timeStamp)
+                }
+                result
+            }.getOrDefault(emptyList())   // usage access revoked, or OEM quirk
+        }
+}
+```
+
+> The empty-list fallback means a revoked usage-access permission yields zero
+> measured usage, so nothing is blocked by a limit. That is the fail-open rule
+> applied here: a broken permission must not lock the user out of their phone.
+
+- [ ] **Step 4: Bind it in `AppModule.kt`**
+
+```kotlin
+    @Provides
+    @Singleton
+    fun provideUsageStatsSource(impl: AndroidUsageStatsSource): UsageStatsSource = impl
+```
+
+- [ ] **Step 5: Run the test to verify it passes**
+
+Run: `./gradlew :app:test --tests 'com.anchor.data.usage.UsageEventMappingTest'`
+Expected: PASS (5 tests).
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add -A
+git commit -m "feat: read foreground events from UsageStatsManager"
+```
+
+---
+
+### Task 30: `LimitGate` — the decision
+
+**Files:**
+- Create: `app/src/main/java/com/anchor/domain/LimitGate.kt`
+- Test: `app/src/test/java/com/anchor/domain/LimitGateTest.kt`
+
+**Interfaces:**
+- Consumes: `AppLimitDao` (Task 26), `UsageStatsSource`, `UsageEventMapping` (Task 29), `UsageCalculator` (Task 28), `AnchorDate` usage methods (Task 27), `KillSwitch` (Task 25), `AnchorSettings` (Task 25).
+- Produces:
+  - `sealed interface LimitDecision { data object Allow; data class Pause(val seconds: Int); data class Blocked(val reason: LimitReason, val resetsAtMillis: Long) }`
+  - `enum class LimitReason { DAILY_TIME, DAILY_OPENS, COOLDOWN, SESSION_CAP }`
+  - `class LimitGate(...)` with `suspend fun decide(packageName: String): LimitDecision` and `suspend fun summaryFor(packageName: String): AppUsageSummary`
+
+- [ ] **Step 1: Write the failing test**
+
+`app/src/test/java/com/anchor/domain/LimitGateTest.kt`:
+
+```kotlin
+package com.anchor.domain
+
+import androidx.room.Room
+import androidx.test.core.app.ApplicationProvider
+import com.anchor.data.db.AnchorDatabase
+import com.anchor.data.ha.HaResult
+import com.anchor.data.ha.HaStateDto
+import com.anchor.data.ha.HomeAssistantApi
+import com.anchor.data.ha.HomeAssistantClient
+import com.anchor.data.ha.KillSwitch
+import com.anchor.data.settings.AnchorSettings
+import com.anchor.data.usage.AppLimit
+import com.anchor.data.usage.UsageEvent
+import com.anchor.data.usage.UsageStatsSource
+import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.test.runTest
+import org.junit.After
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import java.time.Clock
+import java.time.LocalDateTime
+import java.time.ZoneId
+
+@RunWith(RobolectricTestRunner::class)
+class LimitGateTest {
+
+    private lateinit var db: AnchorDatabase
+    private val app = "com.google.android.youtube"
+    private val zone = ZoneId.of("America/Los_Angeles")
+    private val minute = 60_000L
+
+    /** Fixed "now": 2026-09-09 15:00 local. Usage day started at 04:00. */
+    private val nowLocal = "2026-09-09T15:00:00"
+    private val clock = Clock.fixed(
+        LocalDateTime.parse(nowLocal).atZone(zone).toInstant(), zone
+    )
+    private val nowMillis = clock.millis()
+    private val dayStartMillis = LocalDateTime.parse("2026-09-09T04:00:00")
+        .atZone(zone).toInstant().toEpochMilli()
+
+    private class FakeSource(private val events: List<UsageEvent>) : UsageStatsSource {
+        override suspend fun events(fromMillis: Long, toMillis: Long) =
+            events.filter { it.timestampMillis in fromMillis..toMillis }
+    }
+
+    private class FakeClient(private val result: HaResult) : HomeAssistantClient(NoApi) {
+        override suspend fun fetchState(baseUrl: String, token: String, entityId: String) = result
+        private object NoApi : HomeAssistantApi {
+            override suspend fun state(url: String, authorization: String) = error("unused")
+        }
+    }
+
+    @Before
+    fun setUp() {
+        db = Room.inMemoryDatabaseBuilder(
+            ApplicationProvider.getApplicationContext(),
+            AnchorDatabase::class.java,
+        ).allowMainThreadQueries().build()
+    }
+
+    @After
+    fun tearDown() = db.close()
+
+    private fun fg(minutesAfterDayStart: Long) =
+        UsageEvent(app, UsageEvent.Type.FOREGROUND, dayStartMillis + minutesAfterDayStart * minute)
+
+    private fun bg(minutesAfterDayStart: Long) =
+        UsageEvent(app, UsageEvent.Type.BACKGROUND, dayStartMillis + minutesAfterDayStart * minute)
+
+    private fun gate(
+        events: List<UsageEvent> = emptyList(),
+        settings: AnchorSettings = AnchorSettings(),
+        haResult: HaResult = HaResult.Unavailable,
+    ): LimitGate {
+        val client = FakeClient(haResult)
+        return LimitGate(
+            appLimitDao = db.appLimitDao(),
+            usageStatsSource = FakeSource(events),
+            killSwitch = KillSwitch(client),
+            anchorDate = AnchorDate(clock),
+            settingsProvider = { settings },
+        )
+    }
+
+    // --- No configuration ---
+
+    @Test
+    fun `an app with no limit row is allowed`() = runTest {
+        assertThat(gate().decide(app)).isEqualTo(LimitDecision.Allow)
+    }
+
+    @Test
+    fun `a disabled limit row is allowed`() = runTest {
+        db.appLimitDao().upsert(AppLimit(app, enabled = false, dailyMinutes = 1))
+        assertThat(gate().decide(app)).isEqualTo(LimitDecision.Allow)
+    }
+
+    // --- Daily time ---
+
+    @Test
+    fun `allowed while under the daily time budget`() = runTest {
+        db.appLimitDao().upsert(AppLimit(app, dailyMinutes = 30))
+        // 20 minutes used.
+        assertThat(gate(events = listOf(fg(60), bg(80))).decide(app))
+            .isEqualTo(LimitDecision.Allow)
+    }
+
+    @Test
+    fun `blocked once the daily time budget is spent`() = runTest {
+        db.appLimitDao().upsert(AppLimit(app, dailyMinutes = 30))
+        val decision = gate(events = listOf(fg(60), bg(95))).decide(app)   // 35 min
+
+        assertThat(decision).isInstanceOf(LimitDecision.Blocked::class.java)
+        assertThat((decision as LimitDecision.Blocked).reason).isEqualTo(LimitReason.DAILY_TIME)
+    }
+
+    @Test
+    fun `blocked exactly at the budget, not one minute past`() = runTest {
+        db.appLimitDao().upsert(AppLimit(app, dailyMinutes = 30))
+        val decision = gate(events = listOf(fg(60), bg(90))).decide(app)   // exactly 30
+
+        assertThat(decision).isInstanceOf(LimitDecision.Blocked::class.java)
+    }
+
+    @Test
+    fun `the block reports the next reset time`() = runTest {
+        db.appLimitDao().upsert(AppLimit(app, dailyMinutes = 30))
+        val decision = gate(events = listOf(fg(60), bg(95))).decide(app) as LimitDecision.Blocked
+
+        val expected = LocalDateTime.parse("2026-09-10T04:00:00")
+            .atZone(zone).toInstant().toEpochMilli()
+        assertThat(decision.resetsAtMillis).isEqualTo(expected)
+    }
+
+    @Test
+    fun `usage before the day reset does not count against today`() = runTest {
+        db.appLimitDao().upsert(AppLimit(app, dailyMinutes = 30))
+        // A 40-minute session that ended at 03:00, before the 04:00 reset.
+        assertThat(gate(events = listOf(fg(-100), bg(-60))).decide(app))
+            .isEqualTo(LimitDecision.Allow)
+    }
+
+    // --- Daily opens ---
+
+    @Test
+    fun `allowed while under the open count`() = runTest {
+        db.appLimitDao().upsert(AppLimit(app, dailyOpens = 3))
+        val events = listOf(fg(10), bg(15), fg(60), bg(65))   // 2 opens
+        assertThat(gate(events = events).decide(app)).isEqualTo(LimitDecision.Allow)
+    }
+
+    @Test
+    fun `blocked past the open count`() = runTest {
+        db.appLimitDao().upsert(AppLimit(app, dailyOpens = 2))
+        val events = listOf(fg(10), bg(15), fg(60), bg(65), fg(120), bg(125))   // 3 opens
+        val decision = gate(events = events).decide(app)
+
+        assertThat(decision).isInstanceOf(LimitDecision.Blocked::class.java)
+        assertThat((decision as LimitDecision.Blocked).reason).isEqualTo(LimitReason.DAILY_OPENS)
+    }
+
+    @Test
+    fun `at exactly the open count the user is still allowed in`() = runTest {
+        // Documented off-by-at-most-one: the comparison is strictly greater
+        // than, because the launch we are deciding about may or may not have
+        // been logged yet. The error direction is toward allowing.
+        db.appLimitDao().upsert(AppLimit(app, dailyOpens = 2))
+        val events = listOf(fg(10), bg(15), fg(60), bg(65))   // exactly 2
+        assertThat(gate(events = events).decide(app)).isEqualTo(LimitDecision.Allow)
+    }
+
+    // --- Cooldown ---
+
+    @Test
+    fun `blocked during the cooldown after closing`() = runTest {
+        db.appLimitDao().upsert(AppLimit(app, cooldownMinutes = 30))
+        // Closed 10 minutes ago (now is 660 minutes after the 04:00 day start).
+        val decision = gate(events = listOf(fg(600), bg(650))).decide(app)
+
+        assertThat(decision).isInstanceOf(LimitDecision.Blocked::class.java)
+        assertThat((decision as LimitDecision.Blocked).reason).isEqualTo(LimitReason.COOLDOWN)
+    }
+
+    @Test
+    fun `the cooldown block reports when the app becomes available`() = runTest {
+        db.appLimitDao().upsert(AppLimit(app, cooldownMinutes = 30))
+        val decision = gate(events = listOf(fg(600), bg(650))).decide(app) as LimitDecision.Blocked
+
+        // Closed at day start + 650 min, plus 30 min of cooldown.
+        assertThat(decision.resetsAtMillis).isEqualTo(dayStartMillis + 680 * minute)
+    }
+
+    @Test
+    fun `allowed once the cooldown has elapsed`() = runTest {
+        db.appLimitDao().upsert(AppLimit(app, cooldownMinutes = 30))
+        // Closed 60 minutes ago.
+        assertThat(gate(events = listOf(fg(560), bg(600))).decide(app))
+            .isEqualTo(LimitDecision.Allow)
+    }
+
+    @Test
+    fun `a cooldown started before the daily reset still applies`() = runTest {
+        // This is why the source queries back past the day start.
+        db.appLimitDao().upsert(AppLimit(app, cooldownMinutes = 30))
+        val gate = LimitGate(
+            appLimitDao = db.appLimitDao(),
+            usageStatsSource = object : UsageStatsSource {
+                override suspend fun events(fromMillis: Long, toMillis: Long) =
+                    listOf(fg(-700), bg(-10))   // closed 10 min before the reset
+            },
+            killSwitch = KillSwitch(FakeClient(HaResult.Unavailable)),
+            anchorDate = AnchorDate(clock),
+            settingsProvider = { AnchorSettings() },
+        )
+        // Now is 11 hours after the reset, so the cooldown has long expired —
+        // but the close time must have been visible to produce that answer.
+        assertThat(gate.decide(app)).isEqualTo(LimitDecision.Allow)
+    }
+
+    // --- Pre-open pause ---
+
+    @Test
+    fun `a configured pause is returned when nothing else blocks`() = runTest {
+        db.appLimitDao().upsert(AppLimit(app, preOpenDelaySeconds = 30))
+        assertThat(gate().decide(app)).isEqualTo(LimitDecision.Pause(30))
+    }
+
+    @Test
+    fun `a hard block outranks the pause`() = runTest {
+        db.appLimitDao().upsert(
+            AppLimit(app, dailyMinutes = 10, preOpenDelaySeconds = 30)
+        )
+        val decision = gate(events = listOf(fg(60), bg(90))).decide(app)
+        assertThat(decision).isInstanceOf(LimitDecision.Blocked::class.java)
+    }
+
+    // --- Ordering and the kill switch ---
+
+    @Test
+    fun `cooldown is reported ahead of the daily time budget`() = runTest {
+        db.appLimitDao().upsert(AppLimit(app, dailyMinutes = 10, cooldownMinutes = 30))
+        val decision = gate(events = listOf(fg(600), bg(650))).decide(app)
+
+        assertThat((decision as LimitDecision.Blocked).reason).isEqualTo(LimitReason.COOLDOWN)
+    }
+
+    @Test
+    fun `an active kill switch allows everything through`() = runTest {
+        db.appLimitDao().upsert(AppLimit(app, dailyMinutes = 1))
+        val settings = AnchorSettings(
+            haBaseUrl = "http://ha.local:8123",
+            haToken = "t",
+            killSwitchEnabled = true,
+            killSwitchEntityId = "input_boolean.anchor_override",
+            killSwitchOverrideState = "on",
+        )
+        val decision = gate(
+            events = listOf(fg(60), bg(120)),
+            settings = settings,
+            haResult = HaResult.Ok(HaStateDto("e", "on", emptyMap())),
+        ).decide(app)
+
+        assertThat(decision).isEqualTo(LimitDecision.Allow)
+    }
+
+    @Test
+    fun `FAIL-OPEN - no usage data measured means nothing is blocked`() = runTest {
+        // A revoked usage-access permission yields an empty event list.
+        db.appLimitDao().upsert(AppLimit(app, dailyMinutes = 1, dailyOpens = 1))
+        assertThat(gate(events = emptyList()).decide(app)).isEqualTo(LimitDecision.Allow)
+    }
+}
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `./gradlew :app:test --tests 'com.anchor.domain.LimitGateTest'`
+Expected: FAIL — `Unresolved reference: LimitGate`.
+
+- [ ] **Step 3: Write `LimitGate.kt`**
+
+```kotlin
+package com.anchor.domain
+
+import com.anchor.data.settings.AnchorSettings
+import com.anchor.data.ha.KillSwitch
+import com.anchor.data.usage.AppUsageSummary
+import com.anchor.data.usage.AppLimitDao
+import com.anchor.data.usage.UsageCalculator
+import com.anchor.data.usage.UsageEventMapping
+import com.anchor.data.usage.UsageStatsSource
+import javax.inject.Inject
+import javax.inject.Singleton
+
+enum class LimitReason { DAILY_TIME, DAILY_OPENS, COOLDOWN, SESSION_CAP }
+
+sealed interface LimitDecision {
+    data object Allow : LimitDecision
+    /** Show the pause screen for this many seconds, then let the app open. */
+    data class Pause(val seconds: Int) : LimitDecision
+    data class Blocked(val reason: LimitReason, val resetsAtMillis: Long) : LimitDecision
+}
+
+/**
+ * Decides whether an app may be opened right now, given its usage limits.
+ *
+ * Runs *after* [ForegroundAppDecider] (so the emergency allowlist always
+ * wins) and *before* [EveningGate] (so a spent budget is not something you
+ * can answer three questions to get past).
+ */
+@Singleton
+class LimitGate @Inject constructor(
+    private val appLimitDao: AppLimitDao,
+    private val usageStatsSource: UsageStatsSource,
+    private val killSwitch: KillSwitch,
+    private val anchorDate: AnchorDate,
+    private val settingsProvider: suspend () -> AnchorSettings,
+) {
+    suspend fun decide(packageName: String): LimitDecision {
+        val limit = appLimitDao.find(packageName)
+        if (limit == null || !limit.enabled || !limit.hasAnyLimit) return LimitDecision.Allow
+
+        val settings = settingsProvider()
+        if (killSwitch.isBlockingDisabled(killSwitch.check(settings), settings)) {
+            return LimitDecision.Allow
+        }
+
+        val now = anchorDate.nowMillis()
+        val summary = summarize(packageName, settings, now)
+        val nextReset = anchorDate.nextUsageResetMillis(settings.dayResetMinute)
+
+        // 1. Cooldown — the most immediate and most specific answer.
+        limit.cooldownMinutes?.let { cooldown ->
+            val lastEnd = summary.lastForegroundEndAtMillis
+            if (lastEnd != null) {
+                val availableAt = lastEnd + cooldown * 60_000L
+                if (now < availableAt) {
+                    return LimitDecision.Blocked(LimitReason.COOLDOWN, availableAt)
+                }
+            }
+        }
+
+        // 2. Open count. Strictly greater than: the launch being decided may
+        //    not have reached UsageStatsManager yet, so this errs toward
+        //    allowing by at most one open.
+        limit.dailyOpens?.let { maxOpens ->
+            if (summary.opens > maxOpens) {
+                return LimitDecision.Blocked(LimitReason.DAILY_OPENS, nextReset)
+            }
+        }
+
+        // 3. Time budget.
+        limit.dailyMinutes?.let { maxMinutes ->
+            if (summary.foregroundMillis >= maxMinutes * 60_000L) {
+                return LimitDecision.Blocked(LimitReason.DAILY_TIME, nextReset)
+            }
+        }
+
+        // 4. Nothing blocks — but make them wait first, if configured.
+        return if (limit.preOpenDelaySeconds > 0) {
+            LimitDecision.Pause(limit.preOpenDelaySeconds)
+        } else {
+            LimitDecision.Allow
+        }
+    }
+
+    /** Exposed for the dashboard and the session-cap watcher. */
+    suspend fun summaryFor(packageName: String): AppUsageSummary =
+        summarize(packageName, settingsProvider(), anchorDate.nowMillis())
+
+    private suspend fun summarize(
+        packageName: String,
+        settings: AnchorSettings,
+        nowMillis: Long,
+    ): AppUsageSummary {
+        val dayStart = anchorDate.usageDayStartMillis(settings.dayResetMinute)
+        return UsageCalculator.summarize(
+            events = usageStatsSource.events(UsageEventMapping.queryFrom(dayStart), nowMillis),
+            packageName = packageName,
+            windowStartMillis = dayStart,
+            nowMillis = nowMillis,
+        )
+    }
+}
+```
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+Run: `./gradlew :app:test --tests 'com.anchor.domain.LimitGateTest'`
+Expected: PASS (19 tests).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add -A
+git commit -m "feat: add usage limit decision gate"
+```
+
+---
+
+### Task 31: `PauseActivity` and `LimitBlockedActivity`
+
+**Files:**
+- Create: `app/src/main/java/com/anchor/ui/lock/PauseActivity.kt` (replaces `SimpleDelayActivity` from Task 20)
+- Create: `app/src/main/java/com/anchor/ui/lock/LimitBlockedActivity.kt`
+- Delete: `app/src/main/java/com/anchor/ui/lock/SimpleDelayActivity.kt`
+- Modify: `app/src/main/AndroidManifest.xml` (Task 16)
+- Modify: `app/src/main/java/com/anchor/service/AnchorAccessibilityService.kt` (Task 17) — the `SIMPLE_DELAY` route now targets `PauseActivity`
+- Test: `app/src/test/java/com/anchor/ui/lock/PauseCoalescingTest.kt`
+
+**Interfaces:**
+- Consumes: `SimpleDelayTimer` (Task 20), `LimitReason`, `LimitDecision` (Task 30), `EveningDecision` (Task 13).
+- Produces:
+  - `object PauseCoalescing { const val EVENING_DELAY_SECONDS = 5; fun secondsFor(evening: EveningDecision, limit: LimitDecision): Int }`
+  - `class PauseActivity : ComponentActivity()` with `companion object { const val EXTRA_SECONDS: String; fun intent(context, seconds, blockedPackage): Intent }`
+  - `class LimitBlockedActivity : ComponentActivity()` with `companion object { const val EXTRA_REASON: String; const val EXTRA_RESETS_AT: String; fun intent(...): Intent }`
+  - `object LimitCopy { fun title(reason: LimitReason): String; fun body(reason: LimitReason, resetsAtMillis: Long, nowMillis: Long): String }`
+
+- [ ] **Step 1: Write the failing test**
+
+`app/src/test/java/com/anchor/ui/lock/PauseCoalescingTest.kt`:
+
+```kotlin
+package com.anchor.ui.lock
+
+import com.anchor.domain.EveningDecision
+import com.anchor.domain.LimitDecision
+import com.anchor.domain.LimitReason
+import com.anchor.domain.SkipReason
+import com.google.common.truth.Truth.assertThat
+import org.junit.Test
+
+class PauseCoalescingTest {
+
+    @Test
+    fun `no pause when neither gate asks for one`() {
+        assertThat(
+            PauseCoalescing.secondsFor(
+                evening = EveningDecision.Allow(SkipReason.OUTSIDE_WINDOW),
+                limit = LimitDecision.Allow,
+            )
+        ).isEqualTo(0)
+    }
+
+    @Test
+    fun `the evening simple delay alone is five seconds`() {
+        assertThat(
+            PauseCoalescing.secondsFor(EveningDecision.SimpleDelay, LimitDecision.Allow)
+        ).isEqualTo(5)
+    }
+
+    @Test
+    fun `a pre-open pause alone uses its configured length`() {
+        assertThat(
+            PauseCoalescing.secondsFor(
+                EveningDecision.Allow(SkipReason.OUTSIDE_WINDOW),
+                LimitDecision.Pause(30),
+            )
+        ).isEqualTo(30)
+    }
+
+    @Test
+    fun `both asking gives one screen at the longer duration, never two`() {
+        assertThat(
+            PauseCoalescing.secondsFor(EveningDecision.SimpleDelay, LimitDecision.Pause(30))
+        ).isEqualTo(30)
+    }
+
+    @Test
+    fun `a pause shorter than the evening delay is raised to it`() {
+        assertThat(
+            PauseCoalescing.secondsFor(EveningDecision.SimpleDelay, LimitDecision.Pause(3))
+        ).isEqualTo(5)
+    }
+
+    @Test
+    fun `the strict overlay is not a pause`() {
+        // The three questions replace the delay entirely.
+        assertThat(
+            PauseCoalescing.secondsFor(EveningDecision.Strict, LimitDecision.Allow)
+        ).isEqualTo(0)
+    }
+
+    @Test
+    fun `a strict overlay still honours a configured pre-open pause`() {
+        assertThat(
+            PauseCoalescing.secondsFor(EveningDecision.Strict, LimitDecision.Pause(30))
+        ).isEqualTo(30)
+    }
+}
+```
+
+Append the copy tests to the same file:
+
+```kotlin
+    @Test
+    fun `each block reason has its own title`() {
+        val titles = LimitReason.entries.map { LimitCopy.title(it) }
+        assertThat(titles).containsNoDuplicates()
+        assertThat(titles.none { it.isBlank() }).isTrue()
+    }
+
+    @Test
+    fun `a cooldown block says how long is left`() {
+        val now = 1_757_000_000_000L
+        val body = LimitCopy.body(LimitReason.COOLDOWN, now + 25 * 60_000L, now)
+        assertThat(body).contains("25 minutes")
+    }
+
+    @Test
+    fun `a sub-minute wait rounds up rather than saying zero`() {
+        val now = 1_757_000_000_000L
+        val body = LimitCopy.body(LimitReason.COOLDOWN, now + 30_000L, now)
+        assertThat(body).contains("1 minute")
+    }
+
+    @Test
+    fun `a daily block says when it resets rather than counting minutes`() {
+        val now = 1_757_000_000_000L
+        val body = LimitCopy.body(LimitReason.DAILY_TIME, now + 9 * 60 * 60_000L, now)
+        assertThat(body).contains("resets")
+    }
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `./gradlew :app:test --tests 'com.anchor.ui.lock.PauseCoalescingTest'`
+Expected: FAIL — `Unresolved reference: PauseCoalescing`.
+
+- [ ] **Step 3: Write `PauseActivity.kt`**
+
+Move `SimpleDelayTimer` into this file unchanged (its tests from Task 20 keep
+passing), then:
+
+```kotlin
+package com.anchor.ui.lock
+
+import android.content.Context
+import android.content.Intent
+import android.os.Bundle
+import android.os.SystemClock
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import com.anchor.domain.EveningDecision
+import com.anchor.domain.LimitDecision
+import com.anchor.ui.theme.AnchorTheme
+import kotlinx.coroutines.delay
+
+/** Pure countdown arithmetic, unchanged from Task 20. */
+object SimpleDelayTimer {
+    const val DEFAULT_SECONDS = 5
+
+    fun remaining(elapsedMillis: Long, totalSeconds: Int): Int {
+        val remainingMillis = totalSeconds * 1000L - elapsedMillis
+        if (remainingMillis <= 0) return 0
+        return ((remainingMillis + 999) / 1000).toInt()
+    }
+}
+
+/**
+ * Decides how long the single pause screen lasts when the evening gate and a
+ * per-app pre-open pause both want one. They are never shown back to back.
+ */
+object PauseCoalescing {
+    const val EVENING_DELAY_SECONDS = SimpleDelayTimer.DEFAULT_SECONDS
+
+    fun secondsFor(evening: EveningDecision, limit: LimitDecision): Int {
+        val eveningSeconds =
+            if (evening is EveningDecision.SimpleDelay) EVENING_DELAY_SECONDS else 0
+        val limitSeconds = (limit as? LimitDecision.Pause)?.seconds ?: 0
+        return maxOf(eveningSeconds, limitSeconds)
+    }
+}
+
+/**
+ * A blank screen that simply makes you wait. Used both for the evening
+ * fail-open path (5s) and for a per-app pre-open pause (any length).
+ */
+class PauseActivity : ComponentActivity() {
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val totalSeconds = intent.getIntExtra(EXTRA_SECONDS, SimpleDelayTimer.DEFAULT_SECONDS)
+
+        setContent {
+            AnchorTheme {
+                val start = remember { SystemClock.elapsedRealtime() }
+                var remaining by remember { mutableIntStateOf(totalSeconds) }
+
+                LaunchedEffect(Unit) {
+                    while (remaining > 0) {
+                        delay(200)
+                        remaining = SimpleDelayTimer.remaining(
+                            elapsedMillis = SystemClock.elapsedRealtime() - start,
+                            totalSeconds = totalSeconds,
+                        )
+                    }
+                }
+
+                BackHandler(enabled = remaining > 0) { }
+
+                Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
+                    Column(
+                        modifier = Modifier.fillMaxSize().padding(padding).padding(28.dp),
+                        verticalArrangement = Arrangement.Center,
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Text(
+                            text = if (remaining > 0) "$remaining" else "Go ahead",
+                            style = MaterialTheme.typography.headlineMedium,
+                        )
+                        Text(
+                            text = "A moment before you open this.",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 12.dp),
+                        )
+                        Button(
+                            onClick = { finish() },
+                            enabled = remaining == 0,
+                            modifier = Modifier.padding(top = 40.dp),
+                        ) { Text("Continue") }
+                    }
+                }
+            }
+        }
+    }
+
+    companion object {
+        const val EXTRA_SECONDS = "com.anchor.extra.PAUSE_SECONDS"
+
+        fun intent(context: Context, seconds: Int, blockedPackage: String): Intent =
+            Intent(context, PauseActivity::class.java).apply {
+                addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                        Intent.FLAG_ACTIVITY_NO_ANIMATION
+                )
+                putExtra(EXTRA_SECONDS, seconds)
+                putExtra("com.anchor.extra.BLOCKED_PACKAGE", blockedPackage)
+            }
+    }
+}
+```
+
+- [ ] **Step 4: Write `LimitBlockedActivity.kt`**
+
+```kotlin
+package com.anchor.ui.lock
+
+import android.content.Context
+import android.content.Intent
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import com.anchor.domain.LimitReason
+import com.anchor.ui.theme.AnchorTheme
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+
+/** All user-facing limit copy in one testable place. */
+object LimitCopy {
+
+    fun title(reason: LimitReason): String = when (reason) {
+        LimitReason.DAILY_TIME -> "Time's up for today"
+        LimitReason.DAILY_OPENS -> "That's the last open for today"
+        LimitReason.COOLDOWN -> "Not just yet"
+        LimitReason.SESSION_CAP -> "That's the session"
+    }
+
+    fun body(reason: LimitReason, resetsAtMillis: Long, nowMillis: Long): String =
+        when (reason) {
+            LimitReason.COOLDOWN, LimitReason.SESSION_CAP -> {
+                val minutes = minutesUntil(resetsAtMillis, nowMillis)
+                "Available again in $minutes ${if (minutes == 1L) "minute" else "minutes"}."
+            }
+            LimitReason.DAILY_TIME, LimitReason.DAILY_OPENS ->
+                "Resets at ${formatTime(resetsAtMillis)}."
+        }
+
+    /** Rounded up, floored at 1 — "0 minutes" would read as a bug. */
+    private fun minutesUntil(targetMillis: Long, nowMillis: Long): Long =
+        maxOf(1L, (targetMillis - nowMillis + 59_999) / 60_000)
+
+    private fun formatTime(millis: Long): String =
+        DateTimeFormatter.ofPattern("HH:mm")
+            .format(Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault()))
+}
+
+/**
+ * A wall, not a toll. There is no way through — the remote kill switch is the
+ * deliberate escape hatch, and it requires opening Home Assistant.
+ */
+class LimitBlockedActivity : ComponentActivity() {
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val reason = LimitReason.valueOf(
+            intent.getStringExtra(EXTRA_REASON) ?: LimitReason.DAILY_TIME.name
+        )
+        val resetsAt = intent.getLongExtra(EXTRA_RESETS_AT, System.currentTimeMillis())
+
+        setContent {
+            AnchorTheme {
+                BackHandler(enabled = true) { }
+                Blocked(
+                    title = LimitCopy.title(reason),
+                    body = LimitCopy.body(reason, resetsAt, System.currentTimeMillis()),
+                    onDismiss = {
+                        // Send the user home rather than back to the app they
+                        // were blocked from, which would just re-trigger us.
+                        startActivity(
+                            Intent(Intent.ACTION_MAIN)
+                                .addCategory(Intent.CATEGORY_HOME)
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        )
+                        finish()
+                    },
+                )
+            }
+        }
+    }
+
+    @Composable
+    private fun Blocked(title: String, body: String, onDismiss: () -> Unit) {
+        Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
+            Column(
+                modifier = Modifier.fillMaxSize().padding(padding).padding(28.dp),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.headlineMedium,
+                    textAlign = TextAlign.Center,
+                )
+                Text(
+                    text = body,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(top = 12.dp),
+                )
+                TextButton(onClick = onDismiss, modifier = Modifier.padding(top = 40.dp)) {
+                    Text("OK")
+                }
+            }
+        }
+    }
+
+    companion object {
+        const val EXTRA_REASON = "com.anchor.extra.LIMIT_REASON"
+        const val EXTRA_RESETS_AT = "com.anchor.extra.RESETS_AT"
+
+        fun intent(
+            context: Context,
+            reason: LimitReason,
+            resetsAtMillis: Long,
+        ): Intent = Intent(context, LimitBlockedActivity::class.java).apply {
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_NO_ANIMATION
+            )
+            putExtra(EXTRA_REASON, reason.name)
+            putExtra(EXTRA_RESETS_AT, resetsAtMillis)
+        }
+    }
+}
+```
+
+- [ ] **Step 5: Update the manifest**
+
+Replace the `SimpleDelayActivity` entry with:
+
+```xml
+        <activity
+            android:name=".ui.lock.PauseActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleInstance"
+            android:taskAffinity=".lock" />
+
+        <activity
+            android:name=".ui.lock.LimitBlockedActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleInstance"
+            android:taskAffinity=".lock" />
+```
+
+Delete `SimpleDelayActivity.kt`. In `AnchorAccessibilityService.kt`, change the
+`RouteTarget.SIMPLE_DELAY` branch to launch `PauseActivity` — Task 32 rewrites
+that routing block entirely, so a minimal edit to keep the build green is enough
+here.
+
+- [ ] **Step 6: Run the tests to verify they pass**
+
+Run: `./gradlew :app:test --tests 'com.anchor.ui.lock.*'`
+Expected: PASS — the 11 new tests plus the 4 `SimpleDelayTimerTest` tests from
+Task 20, which are unaffected by the move.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add -A
+git commit -m "feat: add configurable pause screen and limit-blocked screen"
+```
+
+---
+
+### Task 32: Accessibility routing and the session-cap watcher
+
+**Files:**
+- Modify: `app/src/main/java/com/anchor/service/AnchorAccessibilityService.kt` (Task 17)
+- Create: `app/src/main/java/com/anchor/domain/SessionCapWatcher.kt`
+- Test: `app/src/test/java/com/anchor/service/LimitRoutingTest.kt`
+- Test: `app/src/test/java/com/anchor/domain/SessionCapWatcherTest.kt`
+
+**Interfaces:**
+- Consumes: `ForegroundAppDecider`, `ForegroundAction` (Task 15), `LimitGate`, `LimitDecision` (Task 30), `EveningGate`, `EveningDecision` (Task 14), `PauseCoalescing` (Task 31), `AppLimitDao` (Task 26).
+- Produces:
+  - `sealed interface Route { data object None; data class Pause(seconds: Int); data class Blocked(reason: LimitReason, resetsAtMillis: Long); data object StrictEvening }`
+  - `object LimitRouting { fun route(limit: LimitDecision, evening: EveningDecision): Route }`
+  - `class SessionCapWatcher(scope, limitGate, appLimitDao, onCapReached)` with `fun onForegroundApp(packageName: String)` and `fun cancel()`
+  - `object SessionCapMath { fun remainingMillis(sessionMinutes: Int, currentSessionStartAtMillis: Long?, nowMillis: Long): Long? }`
+
+- [ ] **Step 1: Write the failing routing test**
+
+`app/src/test/java/com/anchor/service/LimitRoutingTest.kt`:
+
+```kotlin
+package com.anchor.service
+
+import com.anchor.domain.EveningDecision
+import com.anchor.domain.LimitDecision
+import com.anchor.domain.LimitReason
+import com.anchor.domain.SkipReason
+import com.google.common.truth.Truth.assertThat
+import org.junit.Test
+
+class LimitRoutingTest {
+
+    private val allowEvening = EveningDecision.Allow(SkipReason.OUTSIDE_WINDOW)
+
+    @Test
+    fun `both allowing means nothing is shown`() {
+        assertThat(LimitRouting.route(LimitDecision.Allow, allowEvening))
+            .isEqualTo(Route.None)
+    }
+
+    @Test
+    fun `a limit block short-circuits the evening gate entirely`() {
+        val blocked = LimitDecision.Blocked(LimitReason.DAILY_TIME, 123L)
+
+        // Even when the evening gate wants its three questions, the hard
+        // limit wins: there is no point answering to reach a spent budget.
+        assertThat(LimitRouting.route(blocked, EveningDecision.Strict))
+            .isEqualTo(Route.Blocked(LimitReason.DAILY_TIME, 123L))
+    }
+
+    @Test
+    fun `the strict overlay is shown when no limit blocks`() {
+        assertThat(LimitRouting.route(LimitDecision.Allow, EveningDecision.Strict))
+            .isEqualTo(Route.StrictEvening)
+    }
+
+    @Test
+    fun `the evening simple delay becomes a five second pause`() {
+        assertThat(LimitRouting.route(LimitDecision.Allow, EveningDecision.SimpleDelay))
+            .isEqualTo(Route.Pause(5))
+    }
+
+    @Test
+    fun `a pre-open pause is shown when the evening gate is quiet`() {
+        assertThat(LimitRouting.route(LimitDecision.Pause(30), allowEvening))
+            .isEqualTo(Route.Pause(30))
+    }
+
+    @Test
+    fun `a pause and a simple delay collapse into one longer pause`() {
+        assertThat(LimitRouting.route(LimitDecision.Pause(30), EveningDecision.SimpleDelay))
+            .isEqualTo(Route.Pause(30))
+    }
+
+    @Test
+    fun `a strict overlay wins over a pre-open pause`() {
+        // The three questions are the heavier intervention; showing a pause
+        // first and then the questions would be two screens for one open.
+        assertThat(LimitRouting.route(LimitDecision.Pause(30), EveningDecision.Strict))
+            .isEqualTo(Route.StrictEvening)
+    }
+}
+```
+
+- [ ] **Step 2: Write the failing session-cap test**
+
+`app/src/test/java/com/anchor/domain/SessionCapWatcherTest.kt`:
+
+```kotlin
+package com.anchor.domain
+
+import com.google.common.truth.Truth.assertThat
+import org.junit.Test
+
+class SessionCapWatcherTest {
+
+    private val minute = 60_000L
+    private val now = 1_757_000_000_000L
+
+    @Test
+    fun `a session just started gets the full cap`() {
+        assertThat(SessionCapMath.remainingMillis(10, now, now)).isEqualTo(10 * minute)
+    }
+
+    @Test
+    fun `a session already running gets the remainder`() {
+        assertThat(SessionCapMath.remainingMillis(10, now - 4 * minute, now))
+            .isEqualTo(6 * minute)
+    }
+
+    @Test
+    fun `a session already past the cap returns zero, not a negative`() {
+        assertThat(SessionCapMath.remainingMillis(10, now - 15 * minute, now)).isEqualTo(0)
+    }
+
+    @Test
+    fun `no current session means no timer to arm`() {
+        assertThat(SessionCapMath.remainingMillis(10, null, now)).isNull()
+    }
+}
+```
+
+- [ ] **Step 3: Run both tests to verify they fail**
+
+Run: `./gradlew :app:test --tests 'com.anchor.service.LimitRoutingTest' --tests 'com.anchor.domain.SessionCapWatcherTest'`
+Expected: FAIL — `Unresolved reference: LimitRouting` / `SessionCapMath`.
+
+- [ ] **Step 4: Write `SessionCapWatcher.kt`**
+
+```kotlin
+package com.anchor.domain
+
+import com.anchor.data.usage.AppLimitDao
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+
+object SessionCapMath {
+    /**
+     * How long until the current session hits its cap, or null when the app
+     * is not currently in the foreground.
+     */
+    fun remainingMillis(
+        sessionMinutes: Int,
+        currentSessionStartAtMillis: Long?,
+        nowMillis: Long,
+    ): Long? {
+        val start = currentSessionStartAtMillis ?: return null
+        val elapsed = nowMillis - start
+        return maxOf(0L, sessionMinutes * 60_000L - elapsed)
+    }
+}
+
+/**
+ * The one limit that cannot be answered by a query, because it must interrupt
+ * an app already in use. Arms a timer when a capped app comes to the
+ * foreground and cancels it the moment anything else does.
+ */
+class SessionCapWatcher(
+    private val scope: CoroutineScope,
+    private val limitGate: LimitGate,
+    private val appLimitDao: AppLimitDao,
+    private val anchorDate: AnchorDate,
+    private val onCapReached: (packageName: String, resetsAtMillis: Long) -> Unit,
+) {
+    private var timer: Job? = null
+    private var watchedPackage: String? = null
+
+    /** Call on every foreground-app change, including to unlimited apps. */
+    fun onForegroundApp(packageName: String) {
+        if (packageName == watchedPackage) return   // same app, timer stands
+        cancel()
+
+        timer = scope.launch {
+            val cap = appLimitDao.find(packageName)
+                ?.takeIf { it.enabled }
+                ?.sessionMinutes
+                ?: return@launch
+
+            val summary = limitGate.summaryFor(packageName)
+            val remaining = SessionCapMath.remainingMillis(
+                sessionMinutes = cap,
+                currentSessionStartAtMillis = summary.currentSessionStartAtMillis
+                    ?: anchorDate.nowMillis(),   // event not logged yet; assume now
+                nowMillis = anchorDate.nowMillis(),
+            ) ?: return@launch
+
+            watchedPackage = packageName
+            delay(remaining)
+            onCapReached(packageName, anchorDate.nowMillis())
+        }
+    }
+
+    fun cancel() {
+        timer?.cancel()
+        timer = null
+        watchedPackage = null
+    }
+}
+```
+
+- [ ] **Step 5: Rewrite the routing in `AnchorAccessibilityService.kt`**
+
+Replace `RouteTarget`/`EveningRouting` with:
+
+```kotlin
+sealed interface Route {
+    data object None : Route
+    data class Pause(val seconds: Int) : Route
+    data class Blocked(val reason: LimitReason, val resetsAtMillis: Long) : Route
+    data object StrictEvening : Route
+}
+
+/**
+ * Combines the two gates into one screen. Order of precedence:
+ * hard limit > strict evening overlay > pause. The user never sees two
+ * interstitials for a single app launch.
+ */
+object LimitRouting {
+    fun route(limit: LimitDecision, evening: EveningDecision): Route = when {
+        limit is LimitDecision.Blocked -> Route.Blocked(limit.reason, limit.resetsAtMillis)
+        evening is EveningDecision.Strict -> Route.StrictEvening
+        else -> {
+            val seconds = PauseCoalescing.secondsFor(evening, limit)
+            if (seconds > 0) Route.Pause(seconds) else Route.None
+        }
+    }
+}
+```
+
+Replace the `EvaluateEvening` branch of `onAccessibilityEvent` with:
+
+```kotlin
+                is ForegroundAction.EvaluateEvening -> {
+                    val packageName = action.packageName
+
+                    // The session cap watches every foreground change, even
+                    // debounced ones, so its timer tracks reality.
+                    sessionCapWatcher.onForegroundApp(packageName)
+
+                    if (!debounce.shouldHandle(packageName, System.currentTimeMillis())) {
+                        return@launch
+                    }
+
+                    // Limits first: a spent budget outranks the evening ritual.
+                    val limit = limitGate.decide(packageName)
+                    val evening = if (limit is LimitDecision.Blocked) {
+                        EveningDecision.Allow(SkipReason.NOT_IN_SCOPE)   // not consulted
+                    } else {
+                        eveningGate.decide(packageName)
+                    }
+
+                    when (val route = LimitRouting.route(limit, evening)) {
+                        is Route.None -> Unit
+                        is Route.StrictEvening ->
+                            launchLock(EveningLockActivity::class.java, packageName)
+                        is Route.Pause ->
+                            startActivity(PauseActivity.intent(this@AnchorAccessibilityService, route.seconds, packageName))
+                        is Route.Blocked ->
+                            startActivity(LimitBlockedActivity.intent(this@AnchorAccessibilityService, route.reason, route.resetsAtMillis))
+                    }
+                }
+```
+
+Add the injections and the watcher, and cancel it when the lock is reasserted
+or the service dies:
+
+```kotlin
+    @Inject lateinit var limitGate: LimitGate
+    @Inject lateinit var appLimitDao: AppLimitDao
+    @Inject lateinit var anchorDate: AnchorDate
+
+    private val sessionCapWatcher by lazy {
+        SessionCapWatcher(
+            scope = scope,
+            limitGate = limitGate,
+            appLimitDao = appLimitDao,
+            anchorDate = anchorDate,
+            onCapReached = { _, now ->
+                startActivity(
+                    LimitBlockedActivity.intent(this, LimitReason.SESSION_CAP, now)
+                )
+            },
+        )
+    }
+```
+
+In the `Ignore` and `ReassertMorningLock` branches, call
+`sessionCapWatcher.cancel()` — leaving a capped app for the dialer must stop
+the timer. In `onDestroy`, call it before `scope.cancel()`.
+
+- [ ] **Step 6: Run the tests to verify they pass**
+
+Run: `./gradlew :app:test --tests 'com.anchor.service.*' --tests 'com.anchor.domain.SessionCapWatcherTest'`
+Expected: PASS — 7 routing tests, 4 session-cap tests. The old
+`AccessibilityRoutingTest` from Task 17 must be updated: its three
+`EveningRouting.intentActionFor` tests are replaced by the `LimitRouting`
+tests above; keep its three `PackageDebounce` tests unchanged.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add -A
+git commit -m "feat: enforce usage limits and session caps from the accessibility service"
+```
+
+---
+
+### Task 33: Limits settings UI
+
+**Files:**
+- Create: `app/src/main/java/com/anchor/ui/settings/sections/LimitsSection.kt`
+- Modify: `app/src/main/java/com/anchor/ui/settings/SettingsViewModel.kt` (Task 21)
+- Modify: `app/src/main/java/com/anchor/ui/settings/SettingsScreen.kt` (Task 21)
+- Modify: `app/src/main/java/com/anchor/ui/settings/sections/ScheduleSection.kt` (Task 21) — add the day-reset time
+- Modify: `app/src/main/java/com/anchor/ui/settings/sections/HomeAssistantSection.kt` (Task 21) — add the fail-open switch
+- Modify: `app/src/main/java/com/anchor/ui/settings/sections/ExportSection.kt` (Task 21) — add the note-format picker
+- Test: `app/src/test/java/com/anchor/ui/settings/LimitsViewModelTest.kt`
+
+**Interfaces:**
+- Consumes: `AppLimit`, `AppLimitDao` (Task 26), `SettingsViewModel` (Task 21), `NoteFormat` (Task 25).
+- Produces, on `SettingsViewModel`:
+  - `val appLimits: StateFlow<List<AppLimit>>`
+  - `fun setLimit(packageName: String, transform: (AppLimit) -> AppLimit)`
+  - `fun clearLimit(packageName: String)`
+  - `object LimitSummary { fun describe(limit: AppLimit): String }`
+  - `@Composable fun LimitsSection(...)`
+
+- [ ] **Step 1: Write the failing test**
+
+`app/src/test/java/com/anchor/ui/settings/LimitsViewModelTest.kt`:
+
+```kotlin
+package com.anchor.ui.settings
+
+import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.room.Room
+import androidx.test.core.app.ApplicationProvider
+import com.anchor.data.db.AnchorDatabase
+import com.anchor.data.settings.SettingsRepository
+import com.anchor.data.usage.AppLimit
+import com.anchor.ui.settings.sections.LimitSummary
+import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.setMain
+import org.junit.After
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import java.io.File
+
+@RunWith(RobolectricTestRunner::class)
+class LimitsViewModelTest {
+
+    private lateinit var db: AnchorDatabase
+    private lateinit var file: File
+    private lateinit var repo: SettingsRepository
+    private val dispatcher = StandardTestDispatcher()
+    private val youtube = "com.google.android.youtube"
+
+    @Before
+    fun setUp() {
+        Dispatchers.setMain(dispatcher)
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        db = Room.inMemoryDatabaseBuilder(context, AnchorDatabase::class.java)
+            .allowMainThreadQueries().build()
+        file = File(context.cacheDir, "limits-vm-${System.nanoTime()}.preferences_pb")
+        repo = SettingsRepository(PreferenceDataStoreFactory.create(scope = TestScope()) { file })
+    }
+
+    @After
+    fun tearDown() {
+        db.close(); file.delete(); Dispatchers.resetMain()
+    }
+
+    private fun viewModel() = SettingsViewModel(
+        settingsRepository = repo,
+        questionDao = db.customQuestionDao(),
+        appLimitDao = db.appLimitDao(),
+        onScheduleChanged = {},
+    )
+
+    @Test
+    fun `setting a limit on an app with no row creates one`() = runTest(dispatcher) {
+        val vm = viewModel()
+        vm.setLimit(youtube) { it.copy(dailyMinutes = 30) }
+        dispatcher.scheduler.advanceUntilIdle()
+
+        assertThat(db.appLimitDao().find(youtube)!!.dailyMinutes).isEqualTo(30)
+    }
+
+    @Test
+    fun `setting a second mechanic preserves the first`() = runTest(dispatcher) {
+        val vm = viewModel()
+        vm.setLimit(youtube) { it.copy(dailyMinutes = 30) }
+        dispatcher.scheduler.advanceUntilIdle()
+        vm.setLimit(youtube) { it.copy(preOpenDelaySeconds = 30) }
+        dispatcher.scheduler.advanceUntilIdle()
+
+        val limit = db.appLimitDao().find(youtube)!!
+        assertThat(limit.dailyMinutes).isEqualTo(30)
+        assertThat(limit.preOpenDelaySeconds).isEqualTo(30)
+    }
+
+    @Test
+    fun `clearing a limit removes the row entirely`() = runTest(dispatcher) {
+        val vm = viewModel()
+        vm.setLimit(youtube) { it.copy(dailyMinutes = 30) }
+        dispatcher.scheduler.advanceUntilIdle()
+        vm.clearLimit(youtube)
+        dispatcher.scheduler.advanceUntilIdle()
+
+        assertThat(db.appLimitDao().find(youtube)).isNull()
+    }
+
+    @Test
+    fun `appLimits exposes the configured apps`() = runTest(dispatcher) {
+        val vm = viewModel()
+        vm.setLimit(youtube) { it.copy(dailyOpens = 5) }
+        dispatcher.scheduler.advanceUntilIdle()
+
+        assertThat(vm.appLimits.value.map { it.packageName }).containsExactly(youtube)
+    }
+
+    // --- Summary copy ---
+
+    @Test
+    fun `summary lists every configured mechanic`() {
+        val summary = LimitSummary.describe(
+            AppLimit(youtube, dailyMinutes = 30, dailyOpens = 5, preOpenDelaySeconds = 30)
+        )
+        assertThat(summary).contains("30 min/day")
+        assertThat(summary).contains("5 opens")
+        assertThat(summary).contains("30s pause")
+    }
+
+    @Test
+    fun `summary omits unset mechanics`() {
+        val summary = LimitSummary.describe(AppLimit(youtube, dailyMinutes = 30))
+        assertThat(summary).isEqualTo("30 min/day")
+    }
+
+    @Test
+    fun `summary of an empty limit says so rather than being blank`() {
+        assertThat(LimitSummary.describe(AppLimit(youtube))).isEqualTo("No limits set")
+    }
+
+    @Test
+    fun `summary includes cooldown and session cap`() {
+        val summary = LimitSummary.describe(
+            AppLimit(youtube, cooldownMinutes = 20, sessionMinutes = 10)
+        )
+        assertThat(summary).contains("20 min cooldown")
+        assertThat(summary).contains("10 min sessions")
+    }
+}
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `./gradlew :app:test --tests 'com.anchor.ui.settings.LimitsViewModelTest'`
+Expected: FAIL — `No value passed for parameter 'appLimitDao'`.
+
+- [ ] **Step 3: Extend `SettingsViewModel.kt`**
+
+Add `private val appLimitDao: AppLimitDao` as the third constructor parameter
+(before `onScheduleChanged`), then:
+
+```kotlin
+    val appLimits: StateFlow<List<AppLimit>> = appLimitDao.observeAll()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** Creates the row on first use, so the UI never has to. */
+    fun setLimit(packageName: String, transform: (AppLimit) -> AppLimit) {
+        viewModelScope.launch {
+            val existing = appLimitDao.find(packageName) ?: AppLimit(packageName)
+            appLimitDao.upsert(transform(existing))
+        }
+    }
+
+    fun clearLimit(packageName: String) {
+        viewModelScope.launch { appLimitDao.delete(packageName) }
+    }
+```
+
+Update the two `ViewModelProvider` factories in `MainActivity` (Task 22) to
+pass the injected `appLimitDao`, and add `@Inject lateinit var appLimitDao: AppLimitDao`
+there.
+
+- [ ] **Step 4: Write `LimitsSection.kt`**
+
+```kotlin
+package com.anchor.ui.settings.sections
+
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.unit.dp
+import com.anchor.data.usage.AppLimit
+import com.anchor.ui.settings.InstalledApp
+
+/** One-line description of a configured limit, for the list row. */
+object LimitSummary {
+    fun describe(limit: AppLimit): String {
+        val parts = buildList {
+            limit.dailyMinutes?.let { add("$it min/day") }
+            limit.dailyOpens?.let { add("$it opens") }
+            limit.cooldownMinutes?.let { add("$it min cooldown") }
+            limit.sessionMinutes?.let { add("$it min sessions") }
+            if (limit.preOpenDelaySeconds > 0) add("${limit.preOpenDelaySeconds}s pause")
+        }
+        return if (parts.isEmpty()) "No limits set" else parts.joinToString(" · ")
+    }
+}
+
+@Composable
+fun LimitsSection(
+    apps: List<InstalledApp>,
+    limits: List<AppLimit>,
+    onSetLimit: (String, (AppLimit) -> AppLimit) -> Unit,
+    onClearLimit: (String) -> Unit,
+) {
+    var expandedPackage by remember { mutableStateOf<String?>(null) }
+    var pickerOpen by remember { mutableStateOf(false) }
+
+    SettingsSection(title = "App limits") {
+        Text(
+            "Limits apply all day, independently of the Evening Anchor. " +
+                "Leave a field empty for no limit of that kind.",
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(bottom = 12.dp),
+        )
+
+        limits.forEach { limit ->
+            val label = apps.firstOrNull { it.packageName == limit.packageName }?.label
+                ?: limit.packageName
+
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        expandedPackage =
+                            if (expandedPackage == limit.packageName) null else limit.packageName
+                    }
+                    .padding(vertical = 8.dp)
+            ) {
+                Text(label)
+                Text(
+                    LimitSummary.describe(limit),
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            if (expandedPackage == limit.packageName) {
+                LimitEditor(limit, onSetLimit)
+                TextButton(onClick = {
+                    onClearLimit(limit.packageName)
+                    expandedPackage = null
+                }) { Text("Remove all limits") }
+            }
+        }
+
+        TextButton(onClick = { pickerOpen = true }) { Text("Add an app") }
+    }
+
+    if (pickerOpen) {
+        AnchorDialog(onDismiss = { pickerOpen = false }, onConfirm = { pickerOpen = false }) {
+            AppPickerList(
+                apps = apps.filterNot { app -> limits.any { it.packageName == app.packageName } },
+                onPick = { packageName ->
+                    onSetLimit(packageName) { it }
+                    expandedPackage = packageName
+                    pickerOpen = false
+                },
+            )
+        }
+    }
+}
+
+@Composable
+private fun AppPickerList(apps: List<InstalledApp>, onPick: (String) -> Unit) {
+    androidx.compose.foundation.lazy.LazyColumn(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+    ) {
+        androidx.compose.foundation.lazy.items(apps, key = { it.packageName }) { app ->
+            Text(
+                app.label,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onPick(app.packageName) }
+                    .padding(vertical = 12.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun LimitEditor(
+    limit: AppLimit,
+    onSetLimit: (String, (AppLimit) -> AppLimit) -> Unit,
+) {
+    NumberField("Minutes per day", limit.dailyMinutes) { v ->
+        onSetLimit(limit.packageName) { it.copy(dailyMinutes = v) }
+    }
+    NumberField("Opens per day", limit.dailyOpens) { v ->
+        onSetLimit(limit.packageName) { it.copy(dailyOpens = v) }
+    }
+    NumberField("Cooldown, minutes", limit.cooldownMinutes) { v ->
+        onSetLimit(limit.packageName) { it.copy(cooldownMinutes = v) }
+    }
+    NumberField("Max session, minutes", limit.sessionMinutes) { v ->
+        onSetLimit(limit.packageName) { it.copy(sessionMinutes = v) }
+    }
+    NumberField("Pause before opening, seconds", limit.preOpenDelaySeconds.takeIf { it > 0 }) { v ->
+        onSetLimit(limit.packageName) { it.copy(preOpenDelaySeconds = v ?: 0) }
+    }
+}
+
+/** Empty means "no limit", so the value is nullable all the way down. */
+@Composable
+private fun NumberField(label: String, value: Int?, onChange: (Int?) -> Unit) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        OutlinedTextField(
+            value = value?.toString().orEmpty(),
+            onValueChange = { raw ->
+                onChange(raw.filter { it.isDigit() }.take(4).toIntOrNull())
+            },
+            label = { Text(label) },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+        )
+    }
+}
+```
+
+- [ ] **Step 5: Wire the new controls into the existing sections**
+
+In `SettingsScreen.kt`, add after the allowlist section:
+
+```kotlin
+        val limits by viewModel.appLimits.collectAsState()
+        LimitsSection(
+            apps = apps,
+            limits = limits,
+            onSetLimit = viewModel::setLimit,
+            onClearLimit = viewModel::clearLimit,
+        )
+```
+
+In `ScheduleSection.kt`, add a fifth `TimeRow`:
+
+```kotlin
+        TimeRow("Usage limits reset at", settings.dayResetMinute) { m ->
+            onChange { it.copy(dayResetMinute = m) }
+        }
+```
+
+In `HomeAssistantSection.kt`, inside the `killSwitchEnabled` block:
+
+```kotlin
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Treat an outage as override", Modifier.weight(1f))
+                Switch(
+                    checked = settings.killSwitchFailOpenOnOutage,
+                    onCheckedChange = { on ->
+                        onChange { it.copy(killSwitchFailOpenOnOutage = on) }
+                    },
+                )
+            }
+            Text(
+                "Off: an unreachable Home Assistant leaves blocking in place. " +
+                    "On: losing network access disables all blocking — a " +
+                    "one-gesture bypass, so turn this on deliberately.",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+```
+
+In `ExportSection.kt`, add a format picker above the folder button:
+
+```kotlin
+        NoteFormat.entries.forEach { format ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .selectable(
+                        selected = settings.noteFormat == format,
+                        onClick = { onChange { it.copy(noteFormat = format) } },
+                    )
+                    .padding(vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                RadioButton(
+                    selected = settings.noteFormat == format,
+                    onClick = { onChange { it.copy(noteFormat = format) } },
+                )
+                Text(
+                    text = when (format) {
+                        NoteFormat.PLAIN -> "Plain Markdown"
+                        NoteFormat.OBSIDIAN -> "Obsidian (frontmatter + daily-note link)"
+                    },
+                    modifier = Modifier.padding(start = 8.dp),
+                )
+            }
+        }
+        Text(
+            "For Obsidian, point the folder at your vault's daily notes. " +
+                "For Standard Notes, use plain Markdown and its folder importer — " +
+                "its sync is end-to-end encrypted with no local API to write to.",
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 8.dp),
+        )
+```
+
+Add the imports these need: `androidx.compose.foundation.selection.selectable`,
+`androidx.compose.material3.RadioButton`, `androidx.compose.material3.Switch`,
+`androidx.compose.foundation.layout.Row`, `androidx.compose.ui.Alignment`,
+`com.anchor.data.export.NoteFormat`.
+
+- [ ] **Step 6: Run the tests to verify they pass**
+
+Run: `./gradlew :app:test --tests 'com.anchor.ui.settings.*'`
+Expected: PASS — 8 new tests, plus Task 21's 15 with the added constructor
+parameter.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add -A
+git commit -m "feat: add per-app limits UI, day reset, note format and outage switches"
+```
+
+---
+
+### Task 34: Obsidian note format
+
+**Files:**
+- Modify: `app/src/main/java/com/anchor/data/export/MarkdownRenderer.kt` (Task 9)
+- Modify: `app/src/main/java/com/anchor/data/export/MarkdownExporter.kt` (Task 10)
+- Modify: `app/src/main/java/com/anchor/data/export/CheckInExporter.kt` (Task 11)
+- Test: `app/src/test/java/com/anchor/data/export/ObsidianFormatTest.kt`
+
+**Interfaces:**
+- Consumes: `NoteFormat` (Task 25), `MarkdownRenderer` (Task 9).
+- Produces:
+  - `MarkdownRenderer.render(log, questions, format: NoteFormat = NoteFormat.PLAIN): String`
+  - `MarkdownExporter.export(log, questions, phase, treeUri, format: NoteFormat)`
+
+- [ ] **Step 1: Write the failing test**
+
+`app/src/test/java/com/anchor/data/export/ObsidianFormatTest.kt`:
+
+```kotlin
+package com.anchor.data.export
+
+import com.anchor.data.db.DailyLog
+import com.anchor.data.db.DefaultQuestions
+import com.anchor.data.db.Phase
+import com.google.common.truth.Truth.assertThat
+import org.junit.Test
+
+class ObsidianFormatTest {
+
+    private val questions = DefaultQuestions.ALL
+
+    private val log = DailyLog(
+        date = "2026-09-09",
+        mission = "Ship the plan",
+        avoiding = "The invoice email",
+    )
+
+    @Test
+    fun `plain format is byte-for-byte unchanged`() {
+        val expected = """
+            # Daily Anchor - 2026-09-09
+
+            ## Morning
+            - **Mission:** Ship the plan
+            - **Avoiding:** The invoice email
+        """.trimIndent() + "\n"
+
+        assertThat(MarkdownRenderer.render(log, questions, NoteFormat.PLAIN)).isEqualTo(expected)
+    }
+
+    @Test
+    fun `plain is the default when no format is given`() {
+        assertThat(MarkdownRenderer.render(log, questions))
+            .isEqualTo(MarkdownRenderer.render(log, questions, NoteFormat.PLAIN))
+    }
+
+    @Test
+    fun `obsidian opens with YAML frontmatter`() {
+        val rendered = MarkdownRenderer.render(log, questions, NoteFormat.OBSIDIAN)
+
+        assertThat(rendered).startsWith("---\n")
+        assertThat(rendered).contains("date: 2026-09-09")
+        assertThat(rendered).contains("tags: [anchor]")
+    }
+
+    @Test
+    fun `obsidian links the previous day directly under the title`() {
+        val rendered = MarkdownRenderer.render(log, questions, NoteFormat.OBSIDIAN)
+
+        assertThat(rendered).contains("Previous: [[2026-09-08]]")
+        assertThat(rendered.indexOf("Previous: [[2026-09-08]]"))
+            .isLessThan(rendered.indexOf("## Morning"))
+    }
+
+    @Test
+    fun `the previous-day link rolls back across a month boundary`() {
+        val rendered = MarkdownRenderer.render(
+            log.copy(date = "2026-10-01"), questions, NoteFormat.OBSIDIAN
+        )
+        assertThat(rendered).contains("Previous: [[2026-09-30]]")
+    }
+
+    @Test
+    fun `obsidian keeps the same section bodies as plain`() {
+        val rendered = MarkdownRenderer.render(log, questions, NoteFormat.OBSIDIAN)
+
+        assertThat(rendered).contains("## Morning")
+        assertThat(rendered).contains("- **Mission:** Ship the plan")
+    }
+
+    @Test
+    fun `merging an evening section preserves the frontmatter`() {
+        val existing = MarkdownRenderer.render(log, questions, NoteFormat.OBSIDIAN)
+        val full = log.copy(led = "Decided", softened = "Called", faked = "Nodded")
+        val evening = MarkdownRenderer.renderSection(Phase.EVENING, full, questions)!!
+
+        val merged = MarkdownRenderer.mergeInto(existing, evening, Phase.EVENING)
+
+        assertThat(merged).startsWith("---\n")
+        assertThat(merged).contains("date: 2026-09-09")
+        assertThat(merged).contains("Previous: [[2026-09-08]]")
+        assertThat(merged).contains("## Morning")
+        assertThat(merged).contains("## Evening")
+        assertThat(merged).contains("**Led:** Decided")
+    }
+
+    @Test
+    fun `merging does not duplicate the frontmatter block`() {
+        val existing = MarkdownRenderer.render(log, questions, NoteFormat.OBSIDIAN)
+        val evening = MarkdownRenderer.renderSection(
+            Phase.EVENING, log.copy(led = "Decided"), questions
+        )!!
+
+        val merged = MarkdownRenderer.mergeInto(existing, evening, Phase.EVENING)
+
+        assertThat(merged.split("date: 2026-09-09")).hasSize(2)
+    }
+}
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `./gradlew :app:test --tests 'com.anchor.data.export.ObsidianFormatTest'`
+Expected: FAIL — `render` takes no `format` parameter.
+
+- [ ] **Step 3: Add the format to `MarkdownRenderer.kt`**
+
+Replace `render` with:
+
+```kotlin
+    fun render(
+        log: DailyLog,
+        questions: List<CustomQuestion>,
+        format: NoteFormat = NoteFormat.PLAIN,
+    ): String {
+        val sections = listOfNotNull(
+            renderSection(Phase.MORNING, log, questions),
+            renderSection(Phase.EVENING, log, questions),
+        )
+        return buildString {
+            if (format == NoteFormat.OBSIDIAN) {
+                append(frontmatter(log.date))
+            }
+            append(title(log.date)).append("\n")
+            if (format == NoteFormat.OBSIDIAN) {
+                // Directly under the title, not at the end: appending an
+                // Evening section later must not strand it below the content.
+                append("\n").append("Previous: [[${previousDate(log.date)}]]").append("\n")
+            }
+            sections.forEach { append("\n").append(it).append("\n") }
+        }
+    }
+
+    private fun frontmatter(date: String): String =
+        "---\ndate: $date\ntags: [anchor]\n---\n\n"
+
+    private fun previousDate(date: String): String =
+        java.time.LocalDate.parse(date).minusDays(1).toString()
+```
+
+Add `import com.anchor.data.export.NoteFormat` if the file needs it (it is in
+the same package, so no import is required).
+
+`mergeInto` needs no change: it searches for `## ` headings and preserves
+everything above the first one, which is exactly the frontmatter and the link.
+The two merge tests above pin that behaviour so a future edit cannot silently
+break it.
+
+- [ ] **Step 4: Thread the format through the exporters**
+
+`MarkdownExporter.export` gains a `format: NoteFormat` parameter, passed to
+`MarkdownRenderer.render` in the "no existing file" branch:
+
+```kotlin
+    open suspend fun export(
+        log: DailyLog,
+        questions: List<CustomQuestion>,
+        phase: Phase,
+        treeUri: String?,
+        format: NoteFormat = NoteFormat.PLAIN,
+    ): ExportResult {
+```
+
+and inside:
+
+```kotlin
+        val content = if (existing.isNullOrBlank()) {
+            MarkdownRenderer.render(log, questions, format)
+        } else {
+            MarkdownRenderer.mergeInto(existing, section, phase)
+        }
+```
+
+`CheckInExporter.export` passes `settings.noteFormat` to both the local
+exporter and the fallback render:
+
+```kotlin
+        val local = markdown.export(log, questions, phase, settings.exportTreeUri, settings.noteFormat)
+
+        val body = (local as? ExportResult.Written)?.content
+            ?: MarkdownRenderer.render(log, questions, settings.noteFormat)
+```
+
+- [ ] **Step 5: Run the tests to verify they pass**
+
+Run: `./gradlew :app:test --tests 'com.anchor.data.export.*'`
+Expected: PASS — 8 new tests plus every Task 9–11 export test, unchanged. The
+`renders the exact format from the spec` test from Task 9 must still pass
+untouched; if it does not, the default parameter is wrong.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add -A
+git commit -m "feat: add Obsidian note format with frontmatter and daily-note links"
+```
+
+---
+
+### Task 35: Dashboard usage panel and device verification
+
+**Files:**
+- Modify: `app/src/main/java/com/anchor/ui/home/DashboardViewModel.kt` (Task 22)
+- Modify: `app/src/main/java/com/anchor/ui/home/DashboardScreen.kt` (Task 22)
+- Modify: `docs/manual-verification.md` (Task 23)
+- Test: `app/src/test/java/com/anchor/ui/home/UsageRowTest.kt`
+
+**Interfaces:**
+- Consumes: `LimitGate`, `AppUsageSummary` (Tasks 28, 30), `AppLimitDao` (Task 26).
+- Produces:
+  - `data class UsageRow(packageName: String, label: String, usedMinutes: Int, limitMinutes: Int?, opens: Int, limitOpens: Int?)` with `val timeFraction: Float?` and `val isExhausted: Boolean`
+  - `DashboardUiState.usage: List<UsageRow>`
+
+- [ ] **Step 1: Write the failing test**
+
+`app/src/test/java/com/anchor/ui/home/UsageRowTest.kt`:
+
+```kotlin
+package com.anchor.ui.home
+
+import com.google.common.truth.Truth.assertThat
+import org.junit.Test
+
+class UsageRowTest {
+
+    private fun row(used: Int, limit: Int?, opens: Int = 0, limitOpens: Int? = null) =
+        UsageRow("com.x", "X", usedMinutes = used, limitMinutes = limit,
+                 opens = opens, limitOpens = limitOpens)
+
+    @Test
+    fun `fraction is null when there is no time limit`() {
+        assertThat(row(used = 20, limit = null).timeFraction).isNull()
+    }
+
+    @Test
+    fun `fraction reflects progress through the budget`() {
+        assertThat(row(used = 15, limit = 30).timeFraction).isEqualTo(0.5f)
+    }
+
+    @Test
+    fun `fraction is clamped at one when over budget`() {
+        assertThat(row(used = 45, limit = 30).timeFraction).isEqualTo(1f)
+    }
+
+    @Test
+    fun `a zero-minute limit does not divide by zero`() {
+        assertThat(row(used = 5, limit = 0).timeFraction).isEqualTo(1f)
+    }
+
+    @Test
+    fun `exhausted when the time budget is reached`() {
+        assertThat(row(used = 30, limit = 30).isExhausted).isTrue()
+        assertThat(row(used = 29, limit = 30).isExhausted).isFalse()
+    }
+
+    @Test
+    fun `exhausted when the open count is used up`() {
+        assertThat(row(used = 0, limit = null, opens = 5, limitOpens = 5).isExhausted).isTrue()
+    }
+
+    @Test
+    fun `not exhausted when neither limit is set`() {
+        assertThat(row(used = 500, limit = null).isExhausted).isFalse()
+    }
+}
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `./gradlew :app:test --tests 'com.anchor.ui.home.UsageRowTest'`
+Expected: FAIL — `Unresolved reference: UsageRow`.
+
+- [ ] **Step 3: Add `UsageRow` and extend the dashboard**
+
+In `DashboardViewModel.kt`:
+
+```kotlin
+data class UsageRow(
+    val packageName: String,
+    val label: String,
+    val usedMinutes: Int,
+    val limitMinutes: Int?,
+    val opens: Int,
+    val limitOpens: Int?,
+) {
+    /** Progress through the time budget, or null when there is none. */
+    val timeFraction: Float?
+        get() = limitMinutes?.let { limit ->
+            if (limit <= 0) 1f else (usedMinutes.toFloat() / limit).coerceIn(0f, 1f)
+        }
+
+    val isExhausted: Boolean
+        get() = (limitMinutes != null && usedMinutes >= limitMinutes) ||
+            (limitOpens != null && opens >= limitOpens)
+}
+```
+
+Add `val usage: List<UsageRow> = emptyList()` to `DashboardUiState`, add
+`private val limitGate: LimitGate`, `private val appLimitDao: AppLimitDao` and
+`private val appLabels: suspend () -> Map<String, String>` to the constructor,
+and build the rows inside `refresh()`:
+
+```kotlin
+            val labels = appLabels()
+            val usage = appLimitDao.all()
+                .filter { it.enabled && it.hasAnyLimit }
+                .map { limit ->
+                    val summary = limitGate.summaryFor(limit.packageName)
+                    UsageRow(
+                        packageName = limit.packageName,
+                        label = labels[limit.packageName] ?: limit.packageName,
+                        usedMinutes = (summary.foregroundMillis / 60_000L).toInt(),
+                        limitMinutes = limit.dailyMinutes,
+                        opens = summary.opens,
+                        limitOpens = limit.dailyOpens,
+                    )
+                }
+```
+
+Pass `usage = usage` into the `DashboardUiState`. In `MainActivity`, supply
+`appLabels = { installedApps.launchableApps().associate { it.packageName to it.label } }`.
+
+In `DashboardScreen.kt`, add a card above "Today":
+
+```kotlin
+        if (state.usage.isNotEmpty()) {
+            Card(Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("Today's limits", style = MaterialTheme.typography.labelLarge)
+                    state.usage.forEach { row ->
+                        val time = row.limitMinutes
+                            ?.let { "${row.usedMinutes}/$it min" }
+                            ?: "${row.usedMinutes} min"
+                        val opens = row.limitOpens
+                            ?.let { "  ·  ${row.opens}/$it opens" }
+                            ?: ""
+                        Text(
+                            text = "${row.label}   $time$opens",
+                            color = if (row.isExhausted) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                            },
+                            modifier = Modifier.padding(top = 6.dp),
+                        )
+                        row.timeFraction?.let { fraction ->
+                            LinearProgressIndicator(
+                                progress = { fraction },
+                                modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+```
+
+Add `import androidx.compose.material3.LinearProgressIndicator`.
+
+- [ ] **Step 4: Run the test and build**
+
+Run: `./gradlew :app:test :app:assembleDebug`
+Expected: BUILD SUCCESSFUL, all tests passing.
+
+- [ ] **Step 5: Verify the limits on the device**
+
+Append to `docs/manual-verification.md`:
+
+```markdown
+## Usage limits
+
+1. Grant **Usage access** if not already granted, then in Settings → App limits
+   add YouTube with: 2 min/day, 3 opens/day, 1 min cooldown, 1 min sessions,
+   10s pause.
+2. Open YouTube. Verify the 10-second pause screen appears, counts down, and
+   then lets you through.
+3. Close it and immediately reopen. Verify "Not just yet" appears with a
+   minutes-remaining message (the cooldown).
+4. Wait out the cooldown, reopen, and stay in the app. Verify it is interrupted
+   after roughly one minute with "That's the session".
+5. Keep opening until the daily time or open budget is spent. Verify the block
+   names the right reason and reports the reset time.
+6. Check the dashboard: the "Today's limits" card shows used/limit for YouTube
+   and turns red when exhausted.
+7. Turn the Home Assistant kill switch on. Verify a blocked app opens freely.
+   Turn it off again and verify blocking resumes.
+8. Revoke Usage access in system settings. Verify nothing is blocked by a limit
+   (fail-open) and the app does not crash.
+9. Set "Usage limits reset at" to two minutes from now. Verify the counters
+   return to zero at that time and the app becomes available again.
+```
+
+Run each step and record the result.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add -A
+git commit -m "feat: show today's usage against limits on the dashboard"
+```
+
+---
+
+## Part II Spec Coverage
+
+| Requirement | Task |
+|---|---|
+| Daily time budget per app | 26, 28, 30 |
+| Daily open count, with re-entry coalescing | 26, 28, 30 |
+| Cooldown between opens, surviving the daily reset | 26, 28, 29, 30 |
+| Session length cap, enforced mid-use | 26, 32 |
+| Pre-open pause of configurable length | 26, 30, 31 |
+| Hard block until the next reset | 30, 31 |
+| Customizable reset time ("tomorrow") | 25, 27 |
+| Limits independent of the evening window, all day | 30, 32 |
+| Limits obey the kill switch | 30 |
+| Emergency allowlist outranks limits | 32 |
+| One interstitial per launch, never two | 31, 32 |
+| Obsidian frontmatter + daily-note link | 25, 34 |
+| Joplin REST push | 12 (Part I, unchanged) |
+| Plain Markdown | 10, 34 |
+| Standard Notes guidance, no fake integration | 33 |
+| Kill-switch outage behaviour configurable | 25 |
+| Limits settings UI | 33 |
+| Usage visible on the dashboard | 35 |
+
+## Revised Execution Order
+
+```
+Part I    Tasks 1–22        the app as originally specced
+Part II   Tasks 25–35       usage limits, note formats, kill-switch flag
+Verify    Task 23 + 35.5    device checklist, both parts
+Optional  Task 24           Device Owner kiosk mode
+```
+
+Tasks 23 and 24 may be run at any point after Task 22; they are not
+prerequisites for Part II. Within Part II the order is strict — 25 and 26 are
+foundations, 27–30 build the decision, 31–33 the enforcement and UI, and 34–35
+are independent of the limits work and may be done any time after Task 25.
