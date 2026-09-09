@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Always dark. The window background matches the Compose theme so the
+         lock screens never flash white at 5 AM. -->
+    <style name="Theme.Anchor" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/anchor_black</item>
+        <item name="android:statusBarColor">@color/anchor_black</item>
+        <item name="android:navigationBarColor">@color/anchor_black</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>
