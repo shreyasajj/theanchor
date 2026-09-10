@@ -17,6 +17,7 @@ import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -50,6 +51,13 @@ fun DashboardScreen(
     onMeditate: () -> Unit,
 ) {
     val setup = state.permissions?.takeIf { !it.isFullyConfigured }
+    // A Surface, not a bare LazyColumn: it paints the background and sets the
+    // content colour, without which text outside the cards renders black.
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background,
+        contentColor = MaterialTheme.colorScheme.onBackground,
+    ) {
     // LazyColumn so each card is laid out once and reused, rather than the
     // whole page being measured on every frame of a scroll.
     LazyColumn(
@@ -64,6 +72,7 @@ fun DashboardScreen(
         if (state.usage.isNotEmpty()) item(key = "limits") { LimitsCard(state.usage) }
         item(key = "week") { WeekCard(state.week) }
         item(key = "status") { StatusCard(state) }
+    }
     }
 }
 
@@ -93,6 +102,7 @@ private fun Header(state: DashboardUiState, onOpenSettings: () -> Unit) {
 private fun OverrideBanner() {
     AnchorCard(
         containerColor = MaterialTheme.colorScheme.primaryContainer,
+        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
         borderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.4f),
     ) {
         Eyebrow("Override active", color = MaterialTheme.colorScheme.onPrimaryContainer)

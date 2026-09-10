@@ -9,6 +9,13 @@ It is built to be sideloaded on one phone. There is no account, no server, no
 telemetry. The only network calls are to a Home Assistant instance and a Joplin
 instance, both of which you configure and both of which are optional.
 
+| | | |
+|---|---|---|
+| ![Dashboard](docs/screenshots/01-dashboard.png) | ![Morning check-in](docs/screenshots/02-morning-lock.png) | ![Pause](docs/screenshots/04-pause.png) |
+| Dashboard | Morning check-in | The pause before an app opens |
+| ![Breathing](docs/screenshots/07-meditate-breathing.png) | ![Limit reached](docs/screenshots/05-limit-blocked.png) | ![Settings](docs/screenshots/09-settings-top.png) |
+| Guided breathing | A spent budget | Settings |
+
 ---
 
 ## What it does
@@ -200,6 +207,11 @@ Use the **release** APK for daily use. Debug Compose is noticeably slower to scr
 Release is signed with the debug key, so it installs without a keystore of your own.
 
 If Gradle cannot find the SDK, set `sdk.dir` in `local.properties`.
+
+To run it without a phone, `scripts/emulator.sh all` boots a headless emulator,
+installs the debug build with permissions already granted, and screenshots every
+screen into `docs/screenshots/`. See [docs/emulator.md](docs/emulator.md). It is
+pinned to the emulator, so a phone plugged in over USB is never touched.
 
 Pushes to `main` also build both APKs in CI and attach the release APK to a GitHub
 release; see [.github/workflows/android.yml](.github/workflows/android.yml).

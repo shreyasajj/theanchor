@@ -74,6 +74,7 @@ class ConfirmLockActivity : ComponentActivity() {
                 ) {
                     AnchorCard(
                         containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                        contentColor = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.clickable(
                             interactionSource = remember { MutableInteractionSource() }, indication = null,
                         ) { },
