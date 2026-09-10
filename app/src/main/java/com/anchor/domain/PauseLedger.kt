@@ -12,8 +12,9 @@ import java.util.concurrent.ConcurrentHashMap
  * walk away, come back, the suppression is still running). It is to suppress
  * only after the user has sat through it.
  *
- * Written by the pause and meditation screens, read by the service. Both live
- * in the same process; this is deliberately a plain object, like [LockdownState].
+ * Written by the pause and meditation screens, read by the service and by
+ * [LimitGate]. All three live in the same process; this is deliberately a
+ * plain object, like [LockdownState].
  */
 object PauseLedger {
 
@@ -25,22 +26,46 @@ object PauseLedger {
     const val SATISFIED_WINDOW_MILLIS = 60_000L
 
     private val satisfiedUntil = ConcurrentHashMap<String, Long>()
+
+    /** Shown but not yet sat through. Cleared only by finishing one. */
+    private val unfinished = ConcurrentHashMap<String, Boolean>()
+
     private val abandoned = ConcurrentHashMap<String, Boolean>()
+
+    /** A pause screen went up for this app. */
+    fun begin(packageName: String) {
+        if (packageName.isEmpty()) return
+        unfinished[packageName] = true
+        satisfiedUntil.remove(packageName)
+    }
 
     /** The user sat through the wait, or meditated instead. Let them in. */
     fun complete(packageName: String, nowMillis: Long) {
+        if (packageName.isEmpty()) return
         satisfiedUntil[packageName] = nowMillis + SATISFIED_WINDOW_MILLIS
+        unfinished.remove(packageName)
         abandoned.remove(packageName)
     }
 
-    /** The pause screen went away without being finished. */
+    /**
+     * The pause screen went away without being finished: the user pressed
+     * home, switched away, or backed out. The pause is still owed.
+     */
     fun abandon(packageName: String) {
+        if (packageName.isEmpty()) return
         satisfiedUntil.remove(packageName)
         abandoned[packageName] = true
     }
 
     fun isSatisfied(packageName: String, nowMillis: Long): Boolean =
         (satisfiedUntil[packageName] ?: Long.MIN_VALUE) > nowMillis
+
+    /**
+     * True while a pause has been shown for this app but never sat through.
+     * [LimitGate] uses it to refuse a session rejoin: an open whose pause was
+     * never served is not an open worth continuing.
+     */
+    fun hasUnfinishedPause(packageName: String): Boolean = unfinished.containsKey(packageName)
 
     /**
      * True once per abandonment. The service uses it to clear its debounce, so
@@ -52,6 +77,7 @@ object PauseLedger {
     /** Test seam. */
     fun reset() {
         satisfiedUntil.clear()
+        unfinished.clear()
         abandoned.clear()
     }
 }

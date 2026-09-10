@@ -130,7 +130,10 @@ skipped; with it off, confirm the evening pause still appears.
    what is left of the budget.
 2. **Before the countdown ends**, press home, then open the app again. Verify the
    pause reappears with a **full** countdown, not a shortened one, and that you
-   never reach the app without finishing it.
+   never reach the app without finishing it. Repeat twice: it must re-prompt
+   every time, not just the first.
+   This is verified on the emulator by `/tmp/verify_pause.sh` in the same shape:
+   open, home, reopen, home, reopen.
 3. Let it reach zero and tap Continue. Verify the app opens and is not paused
    again immediately.
 4. Open it once more and tap **Close the app**. Verify you land on the home

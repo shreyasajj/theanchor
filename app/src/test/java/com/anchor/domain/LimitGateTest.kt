@@ -41,6 +41,12 @@ class LimitGateTest {
     }
 
     @Before
+    fun resetLedger() = PauseLedger.reset()
+
+    @After
+    fun clearLedger() = PauseLedger.reset()
+
+    @Before
     fun setUp() {
         db = Room.inMemoryDatabaseBuilder(
             ApplicationProvider.getApplicationContext(),
@@ -214,6 +220,29 @@ class LimitGateTest {
         // Left at 645, launched again at 660 (logged). 660 - 640 > 10 min window.
         val decision = gate(events = listOf(fg(640), bg(645), fg(660))).decide(app)
         assertThat((decision as LimitDecision.Blocked).reason).isEqualTo(LimitReason.COOLDOWN)
+    }
+
+    @Test
+    fun `THE BYPASS - walking away from the pause does not become a rejoin`() = runTest {
+        // Opening the app shows the pause, which itself pushes the app to the
+        // background and logs a BACKGROUND event. Coming back must not read
+        // as "left and returned", or the pause is skipped for good.
+        db.appLimitDao().upsert(AppLimit(app, sessionMinutes = 10, preOpenDelaySeconds = 30))
+        PauseLedger.begin(app)
+        PauseLedger.abandon(app)
+
+        val decision = gate(events = listOf(fg(655), bg(656))).decide(app)
+
+        assertThat(decision).isEqualTo(LimitDecision.Pause(30))
+    }
+
+    @Test
+    fun `once the pause is served, returning is a rejoin again`() = runTest {
+        db.appLimitDao().upsert(AppLimit(app, sessionMinutes = 10, preOpenDelaySeconds = 30))
+        PauseLedger.begin(app)
+        PauseLedger.complete(app, clock.millis())
+
+        assertThat(gate(events = listOf(fg(655), bg(658))).decide(app)).isEqualTo(LimitDecision.Allow)
     }
 
     @Test

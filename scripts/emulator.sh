@@ -30,7 +30,10 @@ IMAGE="${IMAGE:-system-images;android-35;google_apis;arm64-v8a}"
 PKG="com.anchor"
 SHOT_DIR="${SHOT_DIR:-docs/screenshots}"
 # A real, always-present app to stand in for something you would limit.
-VICTIM="${VICTIM:-com.android.settings}"
+# NOT com.android.settings: that is on the always-allowed list in
+# ForegroundAppDecider, so it is never evaluated and no limit screen appears.
+# NOT YouTube either: it opens a permission dialog on first launch.
+VICTIM="${VICTIM:-com.google.android.deskclock}"
 
 log() { printf '\033[36m==>\033[0m %s\n' "$*"; }
 
@@ -86,6 +89,9 @@ up() {
   adb_e shell settings put global transition_animation_scale 0 || true
   adb_e shell settings put global animator_duration_scale 0 || true
   adb_e shell wm dismiss-keyguard || true
+  # Without this the screen sleeps and every screenshot comes back black.
+  adb_e shell svc power stayon true || true
+  adb_e shell input keyevent KEYCODE_WAKEUP || true
   log "Booted"
 }
 
@@ -96,6 +102,8 @@ install() {
   adb_e install -r -g app/build/outputs/apk/debug/app-debug.apk >/dev/null
 
   log "Granting what the app needs"
+  # Note: `am force-stop com.anchor` disables its accessibility service until
+  # it is re-enabled. Anything that force-stops the app must redo this.
   # Usage access and the overlay are appops, not runtime permissions.
   adb_e shell appops set "$PKG" GET_USAGE_STATS allow || true
   adb_e shell appops set "$PKG" SYSTEM_ALERT_WINDOW allow || true

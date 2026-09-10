@@ -131,14 +131,21 @@ class LimitGate @Inject constructor(
 
     /**
      * True when a launch now would continue the previous open rather than
-     * start a new one: the open began inside the session window, the user
-     * has left it at least once since (otherwise this launch *is* the open,
-     * whose own foreground event may already be logged), and it was not
-     * ended early on purpose.
+     * start a new one: the open began inside the session window, the user has
+     * left it at least once since (otherwise this launch *is* the open, whose
+     * own foreground event may already be logged), it was not ended early on
+     * purpose, and its pause was actually served.
+     *
+     * That last condition matters more than it looks. Showing the pause screen
+     * pushes the app into the background, which logs exactly the same
+     * BACKGROUND event as genuinely leaving. Without it, opening an app,
+     * walking away from the pause and coming back reads as a legitimate
+     * rejoin, and the pause is skipped entirely.
      */
     private fun rejoinsOpen(limit: AppLimit, summary: AppUsageSummary, now: Long): Boolean {
         val window = limit.sessionMinutes?.let { it * 60_000L } ?: return false
         val openStart = summary.lastOpenStartAtMillis ?: return false
+        if (PauseLedger.hasUnfinishedPause(limit.packageName)) return false
         val leftSince = summary.lastForegroundEndAtMillis?.let { it >= openStart } ?: false
         val lockedSince = lastEarlyLock?.let { it >= openStart } ?: false
         return leftSince && !lockedSince && now - openStart < window

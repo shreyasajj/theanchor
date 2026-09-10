@@ -69,6 +69,10 @@ class MeditationActivity : ComponentActivity() {
 
     private var blockedPackage: String? = null
 
+    /** Set once the user has chosen what happens next, so onStop can tell
+     *  a deliberate exit from simply walking away. */
+    private var resolved = false
+
     private enum class Stage { CHOOSE, BREATHING, DONE }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -309,12 +313,20 @@ class MeditationActivity : ComponentActivity() {
 
     /** Sitting served the pause, so going in now is allowed. */
     private fun openAnyway() {
+        resolved = true
         blockedPackage?.let { PauseLedger.complete(it, System.currentTimeMillis()) }
         finish()
     }
 
+    /** Walking away mid-sit leaves the pause owed, like abandoning it. */
+    override fun onStop() {
+        if (!resolved) blockedPackage?.let { PauseLedger.abandon(it) }
+        super.onStop()
+    }
+
     /** Leave without opening the app. */
     private fun leave() {
+        resolved = true
         blockedPackage?.let { PauseLedger.abandon(it) }
         startActivity(
             Intent(Intent.ACTION_MAIN)

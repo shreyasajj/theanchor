@@ -92,6 +92,7 @@ class PauseActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         val totalSeconds = intent.getIntExtra(EXTRA_SECONDS, SimpleDelayTimer.DEFAULT_SECONDS)
         blockedPackage = intent.getStringExtra(EXTRA_BLOCKED_PACKAGE).orEmpty()
+        PauseLedger.begin(blockedPackage)
         val appLabel = blockedPackage.takeIf { it.isNotEmpty() }?.let { labelFor(it) }
 
         setContent {
@@ -204,10 +205,14 @@ class PauseActivity : ComponentActivity() {
         )
     }
 
-    override fun onDestroy() {
-        // Walked away mid-countdown: the next return starts over.
+    /**
+     * Pressing home stops this screen without destroying it, so onDestroy is
+     * far too late to notice someone walking away mid-countdown. onStop is the
+     * moment the pause stopped being watched.
+     */
+    override fun onStop() {
         if (!completed) PauseLedger.abandon(blockedPackage)
-        super.onDestroy()
+        super.onStop()
     }
 
     private fun labelFor(packageName: String): String? = runCatching {

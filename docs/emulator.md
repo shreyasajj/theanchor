@@ -79,6 +79,24 @@ The emulator would otherwise show the Setup card instead of the dashboard:
 The export folder is not granted, because it is a Storage Access Framework
 folder the user must pick by hand. The Setup card will still list it.
 
+## Two traps
+
+**Force-stopping the app disables its accessibility service.** Android will not
+restart it on its own. Anything that runs `am force-stop com.anchor` must
+re-enable the service afterwards and wait for it to bind:
+
+```bash
+adb -e shell settings put secure enabled_accessibility_services \
+  com.anchor/com.anchor.service.AnchorAccessibilityService
+adb -e shell settings put secure accessibility_enabled 1
+adb -e shell dumpsys accessibility | grep -c 'label=The Anchor'   # 1 when bound
+```
+
+**Pick the test app carefully.** `com.android.settings` is on the always-allowed
+list in `ForegroundAppDecider`, so it is never evaluated and no limit screen
+will ever appear for it. YouTube opens a permission dialog on first launch,
+which sits on top of everything. The Clock is a good neutral choice.
+
 ## Limits of this approach
 
 - An emulator has no Home Assistant, so location gating always reads as
