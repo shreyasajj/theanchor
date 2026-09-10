@@ -27,10 +27,12 @@ import com.anchor.data.db.DailyLogDao
 import com.anchor.data.ha.KillSwitch
 import com.anchor.data.settings.SettingsRepository
 import com.anchor.data.usage.AppLimitDao
+import com.anchor.data.usage.MeditationSessionDao
 import com.anchor.domain.AnchorDate
 import com.anchor.domain.LimitGate
 import com.anchor.domain.LockdownEnforcer
 import com.anchor.ui.lock.EveningLockActivity
+import com.anchor.ui.lock.MeditationActivity
 import com.anchor.service.AnchorAccessibilityService
 import com.anchor.service.AnchorForegroundService
 import com.anchor.service.MorningAlarmScheduler
@@ -52,6 +54,7 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var questionDao: CustomQuestionDao
     @Inject lateinit var dailyLogDao: DailyLogDao
     @Inject lateinit var appLimitDao: AppLimitDao
+    @Inject lateinit var meditationDao: MeditationSessionDao
     @Inject lateinit var anchorDate: AnchorDate
     @Inject lateinit var killSwitch: KillSwitch
     @Inject lateinit var limitGate: LimitGate
@@ -86,6 +89,7 @@ class MainActivity : ComponentActivity() {
                     settingsRepository = settingsRepository,
                     limitGate = limitGate,
                     appLimitDao = appLimitDao,
+                    meditationDao = meditationDao,
                     appLabels = { installedApps.launchableApps().associate { it.packageName to it.label } },
                     readPermissions = { treeUri -> readPermissions(treeUri) },
                 )
@@ -125,6 +129,7 @@ class MainActivity : ComponentActivity() {
                             onOpenSettings = { navController.navigate("settings") },
                             onAnswerMorning = { enforcer.begin() },
                             onAnswerEvening = { startActivity(Intent(this@MainActivity, EveningLockActivity::class.java)) },
+                            onMeditate = { startActivity(MeditationActivity.intent(this@MainActivity)) },
                             onFixPermission = { item ->
                                 when (item) {
                                     PermissionState.ACCESSIBILITY ->

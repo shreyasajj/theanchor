@@ -58,25 +58,6 @@ class AccessibilityRoutingTest {
         assertThat(LimitRouting.route(LimitDecision.Pause(30), EveningDecision.Strict)).isEqualTo(Route.StrictEvening)
     }
 
-    // --- PauseGrace ---
-
-    @Test
-    fun `the app returning after its own pause is not paused again`() {
-        val grace = PauseGrace(extraMillis = 60_000)
-        grace.noteShown("com.youtube", seconds = 30, nowMillis = 1_000)
-
-        assertThat(grace.suppresses("com.youtube", nowMillis = 31_000)).isTrue()
-        assertThat(grace.suppresses("com.youtube", nowMillis = 90_000)).isTrue()
-        assertThat(grace.suppresses("com.youtube", nowMillis = 92_000)).isFalse()
-    }
-
-    @Test
-    fun `the pause grace is per package`() {
-        val grace = PauseGrace()
-        grace.noteShown("com.youtube", seconds = 30, nowMillis = 1_000)
-        assertThat(grace.suppresses("com.instagram", nowMillis = 2_000)).isFalse()
-    }
-
     // --- RelockButton ---
 
     @Test

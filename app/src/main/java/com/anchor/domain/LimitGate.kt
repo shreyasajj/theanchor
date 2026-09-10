@@ -115,6 +115,17 @@ class LimitGate @Inject constructor(
         return summarize(packageName, limit, settingsProvider(), anchorDate.nowMillis())
     }
 
+    /**
+     * What is left of this app's budget, for the pause and blocked screens.
+     * Null limit means the app is unlimited.
+     */
+    suspend fun budgetFor(packageName: String): List<String> {
+        val limit = appLimitDao.find(packageName) ?: return emptyList()
+        val now = anchorDate.nowMillis()
+        val summary = summarize(packageName, limit, settingsProvider(), now)
+        return BudgetSummary.describe(limit, summary, now)
+    }
+
     /** The most recent early lock seen by the last [summarize] call. */
     private var lastEarlyLock: Long? = null
 

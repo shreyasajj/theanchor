@@ -14,9 +14,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Button
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -70,6 +72,7 @@ class LimitBlockedActivity : ComponentActivity() {
             intent.getStringExtra(EXTRA_REASON) ?: LimitReason.DAILY_TIME.name
         )
         val resetsAt = intent.getLongExtra(EXTRA_RESETS_AT, System.currentTimeMillis())
+        val blockedPackage = intent.getStringExtra(EXTRA_BLOCKED_PACKAGE)
 
         setContent {
             AnchorTheme {
@@ -77,6 +80,10 @@ class LimitBlockedActivity : ComponentActivity() {
                 Blocked(
                     title = LimitCopy.title(reason),
                     body = LimitCopy.body(reason, resetsAt, System.currentTimeMillis()),
+                    onMeditate = {
+                        startActivity(MeditationActivity.intent(this, blockedPackage))
+                        finish()
+                    },
                     onDismiss = {
                         // Send the user home rather than back to the app they
                         // were blocked from, which would just re-trigger us.
@@ -93,7 +100,7 @@ class LimitBlockedActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun Blocked(title: String, body: String, onDismiss: () -> Unit) {
+    private fun Blocked(title: String, body: String, onMeditate: () -> Unit, onDismiss: () -> Unit) {
         Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
             Column(
                 modifier = Modifier.fillMaxSize().padding(padding).padding(28.dp),
@@ -114,12 +121,14 @@ class LimitBlockedActivity : ComponentActivity() {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center,
                 )
-                Spacer(Modifier.height(48.dp))
-                OutlinedButton(
-                    onClick = onDismiss,
+                Spacer(Modifier.height(44.dp))
+                Button(
+                    onClick = onMeditate,
                     modifier = Modifier.fillMaxWidth().height(54.dp),
                     shape = MaterialTheme.shapes.small,
-                ) { Text("Back to home", style = MaterialTheme.typography.titleMedium) }
+                ) { Text("Breathe for a minute", style = MaterialTheme.typography.titleMedium) }
+                Spacer(Modifier.height(8.dp))
+                TextButton(onClick = onDismiss) { Text("Back to home") }
             }
         }
     }
@@ -127,8 +136,14 @@ class LimitBlockedActivity : ComponentActivity() {
     companion object {
         const val EXTRA_REASON = "com.anchor.extra.LIMIT_REASON"
         const val EXTRA_RESETS_AT = "com.anchor.extra.RESETS_AT"
+        const val EXTRA_BLOCKED_PACKAGE = "com.anchor.extra.BLOCKED_PACKAGE"
 
-        fun intent(context: Context, reason: LimitReason, resetsAtMillis: Long): Intent =
+        fun intent(
+            context: Context,
+            reason: LimitReason,
+            resetsAtMillis: Long,
+            blockedPackage: String? = null,
+        ): Intent =
             Intent(context, LimitBlockedActivity::class.java).apply {
                 addFlags(
                     Intent.FLAG_ACTIVITY_NEW_TASK or
@@ -137,6 +152,7 @@ class LimitBlockedActivity : ComponentActivity() {
                 )
                 putExtra(EXTRA_REASON, reason.name)
                 putExtra(EXTRA_RESETS_AT, resetsAtMillis)
+                if (blockedPackage != null) putExtra(EXTRA_BLOCKED_PACKAGE, blockedPackage)
             }
     }
 }

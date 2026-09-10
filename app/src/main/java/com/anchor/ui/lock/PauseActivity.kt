@@ -11,6 +11,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -18,22 +19,32 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.lifecycleScope
 import com.anchor.domain.EveningDecision
 import com.anchor.domain.LimitDecision
+import com.anchor.domain.LimitGate
+import com.anchor.domain.PauseLedger
 import com.anchor.ui.components.Eyebrow
+import com.anchor.ui.components.Hint
 import com.anchor.ui.theme.AnchorTheme
+import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import javax.inject.Inject
 
 /** Pure countdown arithmetic, so the timing is unit-testable. */
 object SimpleDelayTimer {
@@ -63,21 +74,35 @@ object PauseCoalescing {
 }
 
 /**
- * A blank screen that simply makes you wait. Used both for the evening
- * fail-open path (5s) and for a per-app pre-open pause (any length).
- * A pause, not a wall.
+ * The wait before a restricted app opens. Three ways out: sit through it and
+ * continue, walk away and close the app, or sit and breathe instead.
+ *
+ * Leaving the screen without finishing counts as abandoned, so coming back to
+ * the app starts a fresh countdown rather than waving you through.
  */
+@AndroidEntryPoint
 class PauseActivity : ComponentActivity() {
+
+    @Inject lateinit var limitGate: LimitGate
+
+    private var completed = false
+    private lateinit var blockedPackage: String
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val totalSeconds = intent.getIntExtra(EXTRA_SECONDS, SimpleDelayTimer.DEFAULT_SECONDS)
-        val appLabel = intent.getStringExtra(EXTRA_BLOCKED_PACKAGE)?.let { labelFor(it) }
+        blockedPackage = intent.getStringExtra(EXTRA_BLOCKED_PACKAGE).orEmpty()
+        val appLabel = blockedPackage.takeIf { it.isNotEmpty() }?.let { labelFor(it) }
 
         setContent {
             AnchorTheme {
                 val start = remember { SystemClock.elapsedRealtime() }
                 var remaining by remember { mutableIntStateOf(totalSeconds) }
+                var budget by remember { mutableStateOf(emptyList<String>()) }
+
+                LaunchedEffect(Unit) {
+                    if (blockedPackage.isNotEmpty()) budget = limitGate.budgetFor(blockedPackage)
+                }
 
                 LaunchedEffect(Unit) {
                     while (remaining > 0) {
@@ -89,7 +114,7 @@ class PauseActivity : ComponentActivity() {
                     }
                 }
 
-                BackHandler(enabled = remaining > 0) { }
+                BackHandler(enabled = true) { closeApp() }
 
                 Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
                     Column(
@@ -98,14 +123,14 @@ class PauseActivity : ComponentActivity() {
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
                         Eyebrow(if (appLabel != null) "Opening $appLabel" else "A moment")
-                        Spacer(Modifier.height(24.dp))
+                        Spacer(Modifier.height(20.dp))
                         Text(
                             text = if (remaining > 0) "$remaining" else "Go",
                             style = MaterialTheme.typography.displayLarge,
                             color = if (remaining > 0) MaterialTheme.colorScheme.onSurface
                             else MaterialTheme.colorScheme.primary,
                         )
-                        Spacer(Modifier.height(16.dp))
+                        Spacer(Modifier.height(12.dp))
                         Text(
                             text = if (remaining > 0) "Breathe. Is this what you want to do right now?"
                             else "Go ahead, if you still want to.",
@@ -113,18 +138,76 @@ class PauseActivity : ComponentActivity() {
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             textAlign = TextAlign.Center,
                         )
-                        Spacer(Modifier.height(48.dp))
+
+                        if (budget.isNotEmpty()) {
+                            Spacer(Modifier.height(24.dp))
+                            budget.forEach { line ->
+                                Hint(line, Modifier.padding(vertical = 2.dp))
+                            }
+                        }
+
+                        Spacer(Modifier.height(40.dp))
+
                         AnimatedVisibility(visible = remaining == 0, enter = fadeIn()) {
                             Button(
-                                onClick = { finish() },
+                                onClick = { continueToApp() },
                                 modifier = Modifier.fillMaxWidth().height(54.dp),
                                 shape = MaterialTheme.shapes.small,
                             ) { Text("Continue", style = MaterialTheme.typography.titleMedium) }
+                        }
+
+                        Spacer(Modifier.height(12.dp))
+                        OutlinedButton(
+                            onClick = { meditateInstead() },
+                            modifier = Modifier.fillMaxWidth().height(54.dp),
+                            shape = MaterialTheme.shapes.small,
+                        ) { Text("Breathe for a minute instead", style = MaterialTheme.typography.titleMedium) }
+
+                        Spacer(Modifier.height(4.dp))
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                            TextButton(onClick = { closeApp() }) {
+                                Text(if (appLabel != null) "Close $appLabel" else "Close the app")
+                            }
                         }
                     }
                 }
             }
         }
+    }
+
+    /** The wait was served: let the app through. */
+    private fun continueToApp() {
+        completed = true
+        PauseLedger.complete(blockedPackage, System.currentTimeMillis())
+        finish()
+    }
+
+    /** Chose not to go in at all. Nothing is credited; the app stays closed. */
+    private fun closeApp() {
+        completed = true
+        PauseLedger.abandon(blockedPackage)
+        goHome()
+        finish()
+    }
+
+    private fun meditateInstead() {
+        completed = true   // the meditation screen owns the outcome from here
+        startActivity(MeditationActivity.intent(this, blockedPackage))
+        finish()
+    }
+
+    private fun goHome() {
+        startActivity(
+            Intent(Intent.ACTION_MAIN)
+                .addCategory(Intent.CATEGORY_HOME)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
+    }
+
+    override fun onDestroy() {
+        // Walked away mid-countdown: the next return starts over.
+        if (!completed) PauseLedger.abandon(blockedPackage)
+        super.onDestroy()
     }
 
     private fun labelFor(packageName: String): String? = runCatching {

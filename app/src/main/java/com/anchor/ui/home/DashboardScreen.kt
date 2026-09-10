@@ -47,6 +47,7 @@ fun DashboardScreen(
     onFixPermission: (String) -> Unit,
     onAnswerMorning: () -> Unit,
     onAnswerEvening: () -> Unit,
+    onMeditate: () -> Unit,
 ) {
     val setup = state.permissions?.takeIf { !it.isFullyConfigured }
     // LazyColumn so each card is laid out once and reused, rather than the
@@ -59,7 +60,7 @@ fun DashboardScreen(
         item(key = "header") { Header(state, onOpenSettings) }
         if (state.overrideStatus == OverrideStatus.ACTIVE) item(key = "override") { OverrideBanner() }
         if (setup != null) item(key = "setup") { SetupCard(setup, onFixPermission) }
-        item(key = "today") { TodayCard(state, onAnswerMorning, onAnswerEvening) }
+        item(key = "today") { TodayCard(state, onAnswerMorning, onAnswerEvening, onMeditate) }
         if (state.usage.isNotEmpty()) item(key = "limits") { LimitsCard(state.usage) }
         item(key = "week") { WeekCard(state.week) }
         item(key = "status") { StatusCard(state) }
@@ -127,7 +128,12 @@ private fun SetupCard(permissions: PermissionState, onFix: (String) -> Unit) {
 }
 
 @Composable
-private fun TodayCard(state: DashboardUiState, onAnswerMorning: () -> Unit, onAnswerEvening: () -> Unit) {
+private fun TodayCard(
+    state: DashboardUiState,
+    onAnswerMorning: () -> Unit,
+    onAnswerEvening: () -> Unit,
+    onMeditate: () -> Unit,
+) {
     val s = state.settings
     SectionCard(title = "Today") {
         PhaseRow(
@@ -145,6 +151,25 @@ private fun TodayCard(state: DashboardUiState, onAnswerMorning: () -> Unit, onAn
             preview = state.today?.let { firstAnswer(it, morning = false) },
             onAnswer = onAnswerEvening,
         )
+        SoftDivider(Modifier.padding(vertical = 12.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            StatusDot(state.meditationSecondsToday > 0, size = 12)
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text("Breathing", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    text = if (state.meditationSecondsToday > 0) {
+                        val minutes = state.meditationSecondsToday / 60
+                        val sits = state.meditationCountToday
+                        "$minutes min over ${if (sits == 1) "one sit" else "$sits sits"}"
+                    } else "Not yet",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            TextButton(onClick = onMeditate) { Text("Sit now") }
+        }
         Hint(
             "The morning check-in appears on its own during the window when you are home. " +
                 "Answer now to do it by hand at any time.",

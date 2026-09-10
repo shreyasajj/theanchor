@@ -81,6 +81,13 @@
             android:taskAffinity=".lock" />
 
         <activity
+            android:name=".ui.lock.MeditationActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleInstance"
+            android:taskAffinity=".lock" />
+
+        <activity
             android:name=".ui.lock.ConfirmLockActivity"
             android:excludeFromRecents="true"
             android:exported="false"

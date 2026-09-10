@@ -17,6 +17,7 @@ import com.anchor.domain.LimitDecision
 import com.anchor.domain.LimitGate
 import com.anchor.domain.LimitReason
 import com.anchor.domain.LockdownEnforcer
+import com.anchor.domain.PauseLedger
 import com.anchor.domain.MorningDecision
 import com.anchor.domain.MorningGate
 import com.anchor.domain.SessionCapWatcher
@@ -63,24 +64,6 @@ object LimitRouting {
  * Android emits several TYPE_WINDOW_STATE_CHANGED events per app launch;
  * without this the gates would be queried (and HA hit) several times per open.
  */
-/**
- * After a pause screen is shown for an app, the app comes back to the front
- * when the countdown ends, which is itself a foreground change. Without this
- * the same launch would be paused again, forever.
- */
-class PauseGrace(private val extraMillis: Long = 60_000) {
-    private var packageName: String? = null
-    private var untilMillis: Long = Long.MIN_VALUE
-
-    fun noteShown(packageName: String, seconds: Int, nowMillis: Long) {
-        this.packageName = packageName
-        untilMillis = nowMillis + seconds * 1000L + extraMillis
-    }
-
-    fun suppresses(packageName: String, nowMillis: Long): Boolean =
-        packageName == this.packageName && nowMillis < untilMillis
-}
-
 /** Whether the relock button belongs on screen for the app in front. */
 object RelockButton {
     fun shouldShowFor(limit: AppLimit?): Boolean = limit != null && limit.enabled && limit.hasAnyLimit
@@ -136,7 +119,6 @@ class AnchorAccessibilityService : AccessibilityService() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val debounce = PackageDebounce()
-    private val pauseGrace = PauseGrace()
     private val morningRecheck = MorningRecheck()
 
     /** The most recent non-system foreground package, for the relock button. */
@@ -180,7 +162,7 @@ class AnchorAccessibilityService : AccessibilityService() {
             appLimitDao = appLimitDao,
             anchorDate = anchorDate,
             onCapReached = { _, now ->
-                startActivity(LimitBlockedActivity.intent(this, LimitReason.SESSION_CAP, now))
+                startActivity(LimitBlockedActivity.intent(this, LimitReason.SESSION_CAP, now, lastForegroundPackage))
             },
         )
     }
@@ -236,8 +218,13 @@ class AnchorAccessibilityService : AccessibilityService() {
                     sessionCapWatcher.onForegroundApp(target)
 
                     val now = System.currentTimeMillis()
+
+                    // A pause the user actually sat through lets the app in.
+                    // One they walked away from does not, and clears the
+                    // debounce so the retry is not swallowed as a repeat.
+                    if (PauseLedger.isSatisfied(target, now)) return@launch
+                    if (PauseLedger.consumeAbandonment(target)) debounce.clear()
                     if (!debounce.shouldHandle(target, now)) return@launch
-                    if (pauseGrace.suppresses(target, now)) return@launch
 
                     // Limits first: a spent budget outranks the evening ritual.
                     val limit = limitGate.decide(target)
@@ -250,14 +237,12 @@ class AnchorAccessibilityService : AccessibilityService() {
                     when (val route = LimitRouting.route(limit, evening)) {
                         is Route.None -> Unit
                         is Route.StrictEvening -> launchLock(EveningLockActivity::class.java, target)
-                        is Route.Pause -> {
-                            pauseGrace.noteShown(target, route.seconds, now)
+                        is Route.Pause ->
                             startActivity(PauseActivity.intent(this@AnchorAccessibilityService, route.seconds, target))
-                        }
                         is Route.Blocked ->
                             startActivity(
                                 LimitBlockedActivity.intent(
-                                    this@AnchorAccessibilityService, route.reason, route.resetsAtMillis,
+                                    this@AnchorAccessibilityService, route.reason, route.resetsAtMillis, target,
                                 )
                             )
                     }

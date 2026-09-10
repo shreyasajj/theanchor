@@ -9,6 +9,7 @@ import com.anchor.data.ha.OverrideStatus
 import com.anchor.data.settings.AnchorSettings
 import com.anchor.data.settings.SettingsRepository
 import com.anchor.data.usage.AppLimitDao
+import com.anchor.data.usage.MeditationSessionDao
 import com.anchor.domain.AnchorDate
 import com.anchor.domain.LimitGate
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -57,6 +58,8 @@ data class DashboardUiState(
     val permissions: PermissionState? = null,
     val usage: List<UsageRow> = emptyList(),
     val settings: AnchorSettings = AnchorSettings(),
+    val meditationSecondsToday: Int = 0,
+    val meditationCountToday: Int = 0,
 )
 
 class DashboardViewModel(
@@ -66,6 +69,7 @@ class DashboardViewModel(
     private val settingsRepository: SettingsRepository,
     private val limitGate: LimitGate,
     private val appLimitDao: AppLimitDao,
+    private val meditationDao: MeditationSessionDao,
     private val appLabels: suspend () -> Map<String, String>,
     private val readPermissions: (exportTreeUri: String?) -> PermissionState,
 ) : ViewModel() {
@@ -81,6 +85,7 @@ class DashboardViewModel(
             val today = anchorDate.today()
             val recent = dailyLogDao.recent(limit = 14).associateBy { it.date }
 
+            val dayStart = anchorDate.usageDayStartMillis(settings.dayResetMinute)
             val labels = appLabels()
             val usage = appLimitDao.all()
                 .filter { it.enabled && it.hasAnyLimit }
@@ -105,6 +110,8 @@ class DashboardViewModel(
                 permissions = readPermissions(settings.exportTreeUri),
                 usage = usage,
                 settings = settings,
+                meditationSecondsToday = meditationDao.secondsSince(dayStart),
+                meditationCountToday = meditationDao.countSince(dayStart),
             )
         }
     }
