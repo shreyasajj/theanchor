@@ -52,7 +52,7 @@ none is untouched. They apply 24 hours a day, regardless of the evening window.
 | Opens per day | Number of launches allowed |
 | Cooldown | Minimum gap after closing before reopening |
 | Max session | Longest single session, interrupted mid-use |
-| Pre-open pause | A forced wait on a blank screen before the app opens |
+| Pre-open pause | A forced wait before the app opens, showing what is left |
 
 **Nothing is counted.** At each decision the app queries `UsageStatsManager` for the
 raw foreground events of the current day and derives elapsed time, open count and
@@ -66,11 +66,38 @@ cap's window has elapsed continues the same open: no cooldown, no open charged, 
 pause. Only the daily time budget still applies, and the cap keeps counting from the
 first open, so stepping out does not extend the session.
 
+**The pause screen.** Before a limited app opens you see what it will cost: minutes
+left today, opens left today, and time left in this session. Three ways out:
+
+- **Continue**, once the countdown reaches zero.
+- **Close the app**, if you have changed your mind. Nothing is credited and nothing
+  is punished; the app simply stays shut.
+- **Breathe for a minute instead**, which opens the guided sit described below.
+
+Leaving the pause screen without finishing it does **not** let you in. Returning to
+the app starts the countdown again from the top. Only a pause you actually sat
+through, or a sit you completed, opens the door.
+
 **Locking early.** While a limited app is in front, Android's accessibility button
 appears (the person icon in the navigation bar, or the floating button on gesture
 navigation). It is hidden everywhere else. Tapping it asks "Lock this app now?";
 confirming ends the session, starts any cooldown immediately, and makes the next
 open cost half an open instead of one. The dashboard shows fractional opens.
+
+### Breathing
+
+Every pause and every hard block offers a guided sit as the alternative to waiting
+or giving up. Pick one, three, five or ten minutes and follow the circle: breathe in
+for four, hold for two, out for six. The longer exhale is the point, and it settles
+the nervous system faster than an even count. A short haptic tick marks each change
+of phase so it works with your eyes closed, and "That's enough" stops early while
+still recording what you sat.
+
+Finishing a sit counts as serving the pause, so you may still open the app
+afterwards. The point is the pause, not the refusal. The dashboard shows the day's
+total, and each sit records the app you chose not to open.
+
+You can also start one deliberately from the dashboard with **Sit now**.
 
 ### Home Assistant
 
@@ -157,7 +184,7 @@ the default.
 Requires JDK 17 and an Android SDK with platform 35. `minSdk` is 33.
 
 ```bash
-./gradlew :app:testDebugUnitTest      # 345 JVM unit tests, no device needed
+./gradlew :app:testDebugUnitTest      # 379 JVM unit tests, no device needed
 ./gradlew :app:assembleRelease        # app/build/outputs/apk/release/app-release.apk
 ./gradlew :app:installRelease         # sideload to a connected device
 ```
@@ -216,12 +243,13 @@ sense answering three questions to reach an app whose budget is already spent.
 
 ```
 app/src/main/java/com/anchor/
-  data/db        Room: DailyLog, CustomQuestion, AppLimit, EarlyLock
+  data/db        Room: DailyLog, CustomQuestion, AppLimit, EarlyLock, MeditationSession
   data/settings  DataStore-backed AnchorSettings
   data/ha        Home Assistant client, LocationGate, KillSwitch
   data/export    Markdown renderer, SAF exporter, Joplin push
   data/usage     UsageStatsManager seam and the pure UsageCalculator
-  domain         MorningGate, EveningGate, LimitGate, ForegroundAppDecider, SubmitCheckIn
+  domain         MorningGate, EveningGate, LimitGate, ForegroundAppDecider, SubmitCheckIn,
+                 PauseLedger, BreathingGuide, BudgetSummary
   service        Accessibility service, foreground service, alarms, boot receiver
   ui             Compose: dashboard, settings, lock screens, theme
 app/src/test     JVM unit tests mirroring the above
@@ -245,7 +273,9 @@ questions you add yourself get a `custom:<uuid>` slot key and their answers live
 JSON column on the same row. Editing a question keeps its slot key, so past answers
 stay attached to it.
 
-Limits live in `app_limit` keyed by package name, early locks in `early_lock`.
+Limits live in `app_limit` keyed by package name, early locks in `early_lock`, and
+finished sits in `meditation_session`. Sits are recorded to the database and shown on
+the dashboard; they are not yet written into the Markdown files.
 The database uses destructive migration: a schema change recreates it, which is fine
 for a personal app whose durable record is the Markdown files.
 

@@ -113,6 +113,31 @@ skipped; with it off, confirm the evening pause still appears.
    dashboard shows 1.5 opens after you reopen.
 4. With a cooldown set, verify the early lock starts it immediately.
 
+## 7d. The pause cannot be walked around
+
+1. Give an app a 30-second pre-open pause. Open it: the pause appears and shows
+   what is left of the budget.
+2. **Before the countdown ends**, press home, then open the app again. Verify the
+   pause reappears with a **full** countdown, not a shortened one, and that you
+   never reach the app without finishing it.
+3. Let it reach zero and tap Continue. Verify the app opens and is not paused
+   again immediately.
+4. Open it once more and tap **Close the app**. Verify you land on the home
+   screen and the app did not come to the front.
+
+## 7e. Breathing
+
+1. From a pause, tap **Breathe for a minute instead**. Pick 1 minute and Begin.
+2. Verify the circle grows on "Breathe in", holds, and shrinks on "Breathe out",
+   the phase counter never shows 0, and a small haptic tick marks each change.
+3. Let it finish. Verify it offers "I'm good" and "Open <app> anyway", and that
+   choosing to open is allowed without another pause.
+4. Start another and tap **That's enough** after a few seconds. Verify it ends
+   and that a sit under 20 seconds is not recorded.
+5. Check the dashboard: the Breathing row shows today's minutes and sit count.
+   **Sit now** starts one with no app involved.
+6. Hit a hard limit. Verify the blocked screen also offers the breath.
+
 ## 7c. Asking without Home Assistant
 
 Turn on "Ask even without Home Assistant", clear the HA URL, and repeat steps
