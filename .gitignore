@@ -12,3 +12,4 @@
 *.aab
 *.keystore
 /app/release
+/artifacts

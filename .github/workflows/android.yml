@@ -1,0 +1,91 @@
+name: Android
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Test and build APKs
+    runs-on: ubuntu-latest
+    permissions:
+      # Needed by the release step below to create a release and upload the APK.
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up the Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-35 build-tools;35.0.0'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Run unit tests
+        run: ./gradlew :app:testDebugUnitTest --no-daemon
+
+      - name: Upload test report
+        # Kept on failure so a red build says which test broke without a rerun.
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report
+          path: app/build/reports/tests/testDebugUnitTest
+          retention-days: 14
+
+      - name: Build APKs
+        # Release is signed with the debug key; AGP generates that keystore on
+        # first use, so no secrets are needed to produce an installable APK.
+        run: ./gradlew :app:assembleDebug :app:assembleRelease --no-daemon
+
+      - name: Name the APKs
+        id: apks
+        run: |
+          version=$(grep -m1 'versionName' app/build.gradle.kts | sed -E 's/.*"(.*)".*/\1/')
+          short=${GITHUB_SHA::7}
+          name="anchor-${version}-build${GITHUB_RUN_NUMBER}-${short}"
+          mkdir -p artifacts
+          cp app/build/outputs/apk/release/app-release.apk "artifacts/${name}.apk"
+          cp app/build/outputs/apk/debug/app-debug.apk "artifacts/${name}-debug.apk"
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload APKs as build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.apks.outputs.name }}
+          path: artifacts/*.apk
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Publish a release with the APK
+        # Only for pushes to main: a pull request build stops at the artifact.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: build-${{ github.run_number }}
+          NAME: ${{ steps.apks.outputs.name }}
+          VERSION: ${{ steps.apks.outputs.version }}
+        run: |
+          notes=$(git log -1 --pretty=format:'%s%n%n%b')
+          gh release create "$TAG" \
+            --title "The Anchor $VERSION (build ${GITHUB_RUN_NUMBER})" \
+            --notes "$notes" \
+            --latest \
+            "artifacts/${NAME}.apk#The Anchor (release, sideload this one)" \
+            "artifacts/${NAME}-debug.apk#The Anchor (debug)"
