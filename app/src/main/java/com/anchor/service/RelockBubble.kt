@@ -32,10 +32,10 @@ object BubbleTouch {
  * A small floating button, shown only while an app with an active limit is in
  * the foreground, for ending that app's session early.
  *
- * Android's own accessibility button cannot do this job: once the user assigns
- * a service to the system shortcut, the system shows that button persistently,
- * and a service cannot hide it per app. So we draw our own, which means it
- * appears exactly when it is useful and goes away the moment it is not.
+ * Not Android's accessibility shortcut: the user assigns that shortcut and the
+ * system draws its button, so a service has no dependable way to show it for
+ * one app and hide it for another. An overlay we own appears exactly when it is
+ * useful and goes away the moment it is not.
  *
  * It fades to nearly invisible after a few seconds so it does not sit over a
  * film, comes back to full opacity when touched, and can be dragged anywhere.
