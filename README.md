@@ -8,14 +8,16 @@ A personal, self-hosted Android app that enforces a daily mindfulness protocol:
 - **Evening Anchor** — opening a blocked app between 20:00 and 05:00 while at home
   shows three reflective questions first. Answer once and the evening is open.
 - **Usage limits** — per-app daily minutes, daily opens, cooldowns, session caps and
-  a pre-open pause, derived from `UsageStatsManager` so nothing drifts.
+  a pre-open pause, derived from `UsageStatsManager` so nothing drifts. Leaving an app
+  and returning inside its session cap continues the same open. The accessibility
+  button locks an app early; the next open then costs half.
 - **Home Assistant** — location gating (at home / specific rooms) and a remote kill
   switch (`input_boolean`) checked at the moment of every block.
 - **Markdown export** — one `YYYY-MM-DD.md` per day (plain or Obsidian format) into a
   folder you pick, with an optional push to Joplin.
 
 Every failure mode fails **open**: an unreachable Home Assistant means less blocking,
-never more.
+never more, unless you turn on "Ask even without Home Assistant" in Settings.
 
 ## Build
 
@@ -24,6 +26,7 @@ Requires JDK 17 and an Android SDK with platform 35.
 ```bash
 ./gradlew :app:testDebugUnitTest      # JVM unit tests (Robolectric, no device)
 ./gradlew :app:assembleDebug          # app/build/outputs/apk/debug/app-debug.apk
+./gradlew :app:assembleRelease        # faster build for daily use, signed with the debug key
 ./gradlew :app:installDebug           # sideload to a connected device
 ```
 

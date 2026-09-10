@@ -61,8 +61,12 @@ class EveningGate @Inject constructor(
         )
         return when (presence) {
             Presence.IN_SCOPE -> EveningDecision.Strict
-            // Both "away" and "HA is down" get the lighter treatment.
-            Presence.OUT_OF_SCOPE, Presence.UNKNOWN -> EveningDecision.SimpleDelay
+            // A confirmed "away" always gets the lighter treatment.
+            Presence.OUT_OF_SCOPE -> EveningDecision.SimpleDelay
+            // "HA is down" does too, unless the user opted to ask anyway.
+            Presence.UNKNOWN ->
+                if (settings.enforceWithoutHomeAssistant) EveningDecision.Strict
+                else EveningDecision.SimpleDelay
         }
     }
 

@@ -5,8 +5,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Icon
@@ -67,41 +67,38 @@ fun SettingsScreen(
             )
         },
     ) { padding ->
-        Column(
-            Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp)
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().padding(padding),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 40.dp),
         ) {
-            Group("Rhythm")
-            ScheduleSection(settings, viewModel::updateSettings)
+            item { Group("Rhythm") }
+            item { ScheduleSection(settings, viewModel::updateSettings) }
 
-            Group("Apps")
-            AppsSection(
+            item { Group("Apps") }
+            item { AppsSection(
                 title = "Blocked in the evening",
                 description = "Opening one of these during the evening window triggers the check-in.",
                 apps = apps,
                 selected = settings.blockedPackages,
                 onToggle = viewModel::toggleBlockedApp,
-            )
-            AppsSection(
+            ) }
+            item { AppsSection(
                 title = "Morning allowlist",
                 description = "Never interrupted during the morning lockdown. The dialer, " +
                     "messaging, emergency and system apps are always allowed.",
                 apps = apps,
                 selected = settings.allowlistPackages,
                 onToggle = viewModel::toggleAllowlistApp,
-            )
-            LimitsSection(
+            ) }
+            item { LimitsSection(
                 apps = apps,
                 limits = limits,
                 onSetLimit = viewModel::setLimit,
                 onClearLimit = viewModel::clearLimit,
-            )
+            ) }
 
-            Group("Questions")
-            QuestionsSection(
+            item { Group("Questions") }
+            item { QuestionsSection(
                 title = "Morning",
                 description = "Asked during the lockdown. Edits keep past answers attached.",
                 questions = morningQuestions,
@@ -109,8 +106,8 @@ fun SettingsScreen(
                 onEdit = viewModel::editQuestion,
                 onDelete = viewModel::deleteQuestion,
                 onMove = viewModel::moveQuestion,
-            )
-            QuestionsSection(
+            ) }
+            item { QuestionsSection(
                 title = "Evening",
                 description = "Asked before a blocked app opens at night.",
                 questions = eveningQuestions,
@@ -118,23 +115,22 @@ fun SettingsScreen(
                 onEdit = viewModel::editQuestion,
                 onDelete = viewModel::deleteQuestion,
                 onMove = viewModel::moveQuestion,
-            )
+            ) }
 
-            Group("Home Assistant")
-            HomeAssistantSection(
+            item { Group("Home Assistant") }
+            item { HomeAssistantSection(
                 settings = settings,
                 onChange = viewModel::updateSettings,
                 onSetRooms = viewModel::setRooms,
                 onSetLocationMode = viewModel::setLocationMode,
-            )
+            ) }
 
-            Group("Notes")
-            ExportSection(
+            item { Group("Notes") }
+            item { ExportSection(
                 settings = settings,
                 onPickFolder = onPickExportFolder,
                 onChange = viewModel::updateSettings,
-            )
-            Spacer(Modifier.height(40.dp))
+            ) }
         }
     }
 }

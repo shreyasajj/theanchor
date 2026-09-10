@@ -1,6 +1,10 @@
 package com.anchor.service
 
+import android.accessibilityservice.AccessibilityButtonController
 import android.accessibilityservice.AccessibilityService
+import android.os.Handler
+import android.os.Looper
+import android.widget.Toast
 import android.content.Intent
 import android.view.accessibility.AccessibilityEvent
 import com.anchor.data.settings.SettingsRepository
@@ -92,6 +96,42 @@ class AnchorAccessibilityService : AccessibilityService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val debounce = PackageDebounce()
 
+    /** The most recent non-system foreground package, for the relock button. */
+    @Volatile private var lastForegroundPackage: String? = null
+
+    /**
+     * The accessibility button (the small person icon in the navigation bar,
+     * or the floating shortcut) locks the current app early. Ends its session,
+     * sends the user home, and makes the next open cost half.
+     */
+    private val buttonCallback = object : AccessibilityButtonController.AccessibilityButtonCallback() {
+        override fun onClicked(controller: AccessibilityButtonController) {
+            scope.launch { lockCurrentAppEarly() }
+        }
+    }
+
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        runCatching { accessibilityButtonController.registerAccessibilityButtonCallback(buttonCallback) }
+    }
+
+    private suspend fun lockCurrentAppEarly() {
+        val target = lastForegroundPackage ?: return
+        if (!limitGate.lockEarly(target)) {
+            toast("No limits set for this app")
+            return
+        }
+        sessionCapWatcher.cancel()
+        performGlobalAction(GLOBAL_ACTION_HOME)
+        toast("Locked early. Coming back costs half an open.")
+    }
+
+    private fun toast(text: String) {
+        Handler(Looper.getMainLooper()).post {
+            Toast.makeText(this, text, Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private val sessionCapWatcher by lazy {
         SessionCapWatcher(
             scope = scope,
@@ -131,6 +171,7 @@ class AnchorAccessibilityService : AccessibilityService() {
 
                 is ForegroundAction.EvaluateEvening -> {
                     val target = action.packageName
+                    lastForegroundPackage = target
 
                     // The session cap watches every foreground change, even
                     // debounced ones, so its timer tracks reality.
@@ -179,6 +220,7 @@ class AnchorAccessibilityService : AccessibilityService() {
     override fun onInterrupt() = Unit
 
     override fun onDestroy() {
+        runCatching { accessibilityButtonController.unregisterAccessibilityButtonCallback(buttonCallback) }
         sessionCapWatcher.cancel()
         scope.cancel()
         super.onDestroy()

@@ -180,6 +180,26 @@ class MorningGateTest {
     }
 
     @Test
+    fun `with the ask-anyway toggle, an unreachable Home Assistant still locks`() = runTest {
+        val settings = configured().copy(enforceWithoutHomeAssistant = true)
+        val (g, _) = gate(settings = settings, haStates = mapOf("device_tracker.pixel" to HaResult.Unavailable))
+        assertThat(g.decide()).isEqualTo(MorningDecision.Lock)
+    }
+
+    @Test
+    fun `with the ask-anyway toggle, an unconfigured Home Assistant still locks`() = runTest {
+        val (g, _) = gate(settings = AnchorSettings(enforceWithoutHomeAssistant = true))
+        assertThat(g.decide()).isEqualTo(MorningDecision.Lock)
+    }
+
+    @Test
+    fun `the ask-anyway toggle never overrides a confirmed not-home reading`() = runTest {
+        val settings = configured().copy(enforceWithoutHomeAssistant = true)
+        val (g, _) = gate(settings = settings, haStates = mapOf("device_tracker.pixel" to state("not_home")))
+        assertThat(g.decide()).isEqualTo(MorningDecision.Skip(SkipReason.NOT_IN_SCOPE))
+    }
+
+    @Test
     fun `specific rooms mode locks only in an allowed room`() = runTest {
         val settings = configured().copy(
             morningLocationMode = LocationMode.SPECIFIC_ROOMS,

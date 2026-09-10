@@ -33,6 +33,7 @@ class SettingsRepository @Inject constructor(
         val MORNING_ROOMS = stringPreferencesKey("morning_rooms")
         val EVENING_MODE = stringPreferencesKey("evening_mode")
         val EVENING_ROOMS = stringPreferencesKey("evening_rooms")
+        val ENFORCE_WITHOUT_HA = booleanPreferencesKey("enforce_without_ha")
         val KILL_ENABLED = booleanPreferencesKey("kill_enabled")
         val KILL_ENTITY = stringPreferencesKey("kill_entity")
         val KILL_STATE = stringPreferencesKey("kill_state")
@@ -65,6 +66,7 @@ class SettingsRepository @Inject constructor(
             prefs[Keys.MORNING_ROOMS] = formatRoomList(next.morningAllowedRooms)
             prefs[Keys.EVENING_MODE] = next.eveningLocationMode.name
             prefs[Keys.EVENING_ROOMS] = formatRoomList(next.eveningAllowedRooms)
+            prefs[Keys.ENFORCE_WITHOUT_HA] = next.enforceWithoutHomeAssistant
             prefs[Keys.KILL_ENABLED] = next.killSwitchEnabled
             prefs[Keys.KILL_ENTITY] = next.killSwitchEntityId
             prefs[Keys.KILL_STATE] = next.killSwitchOverrideState
@@ -94,6 +96,7 @@ class SettingsRepository @Inject constructor(
             morningAllowedRooms = parseRoomList(this[Keys.MORNING_ROOMS] ?: ""),
             eveningLocationMode = this[Keys.EVENING_MODE]?.toLocationMode() ?: d.eveningLocationMode,
             eveningAllowedRooms = parseRoomList(this[Keys.EVENING_ROOMS] ?: ""),
+            enforceWithoutHomeAssistant = this[Keys.ENFORCE_WITHOUT_HA] ?: d.enforceWithoutHomeAssistant,
             killSwitchEnabled = this[Keys.KILL_ENABLED] ?: d.killSwitchEnabled,
             killSwitchEntityId = this[Keys.KILL_ENTITY] ?: d.killSwitchEntityId,
             killSwitchOverrideState = this[Keys.KILL_STATE] ?: d.killSwitchOverrideState,

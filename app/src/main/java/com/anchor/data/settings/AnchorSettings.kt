@@ -36,6 +36,14 @@ data class AnchorSettings(
     val eveningLocationMode: LocationMode = LocationMode.AT_HOME,
     val eveningAllowedRooms: List<String> = emptyList(),
 
+    /**
+     * When Home Assistant cannot say where you are (not configured, or
+     * unreachable), still ask the questions. Off by default, which is the
+     * fail-open behaviour: no answer from HA means no lock and a 5s pause.
+     * A confirmed "not home" reading always skips, whatever this says.
+     */
+    val enforceWithoutHomeAssistant: Boolean = false,
+
     // --- Remote kill switch ---
     val killSwitchEnabled: Boolean = false,
     val killSwitchEntityId: String = "",

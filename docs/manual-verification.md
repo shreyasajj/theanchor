@@ -100,6 +100,24 @@ skipped; with it off, confirm the evening pause still appears.
 9. Set "Usage limits reset at" to two minutes from now. Verify the counters return
    to zero at that time and the app becomes available again.
 
+## 7b. Session rejoin and early lock
+
+1. Give an app a 5-minute session cap and 1 open/day. Open it, leave after a
+   minute, come back within two more. Verify no pause and no block: it is the
+   same open, and the dashboard still shows 1 open.
+2. Stay past five minutes from the *first* open. Verify "That's the session".
+3. Enable the accessibility button for The Anchor (Settings → Accessibility →
+   The Anchor → shortcut). Open the app again, tap the button. Verify a
+   "Locked early" toast, the phone goes home, and the dashboard shows 1.5
+   opens after you reopen.
+4. With a cooldown set, verify the early lock starts it immediately.
+
+## 7c. Asking without Home Assistant
+
+Turn on "Ask even without Home Assistant", clear the HA URL, and repeat steps
+2 and 4. Verify the questions appear instead of the pause / skip. Turn it off
+and verify the fail-open behaviour returns.
+
 ## 8. Persistence across a reboot
 
 ```bash

@@ -66,7 +66,9 @@ class MorningGate @Inject constructor(
         return when (presence) {
             Presence.IN_SCOPE -> MorningDecision.Lock
             Presence.OUT_OF_SCOPE -> MorningDecision.Skip(SkipReason.NOT_IN_SCOPE)
-            Presence.UNKNOWN -> MorningDecision.Skip(SkipReason.LOCATION_UNKNOWN)
+            Presence.UNKNOWN ->
+                if (settings.enforceWithoutHomeAssistant) MorningDecision.Lock
+                else MorningDecision.Skip(SkipReason.LOCATION_UNKNOWN)
         }
     }
 }

@@ -31,11 +31,17 @@ fun HomeAssistantSection(
             "device_tracker.pixel",
         ) { v -> onChange { it.copy(haDeviceTrackerEntityId = v.trim()) } }
 
-        Hint(
-            "If Home Assistant cannot be reached, The Anchor does less, not more: " +
-                "the morning lock is skipped and the evening shows a 5-second pause.",
-            Modifier.padding(top = 8.dp),
-        )
+        SettingRow(
+            "Ask even without Home Assistant",
+            supporting = "Off: when Home Assistant is not set up or cannot be reached, the morning lock " +
+                "is skipped and the evening shows a 5-second pause. On: the questions are asked anyway. " +
+                "A confirmed \"not home\" always skips.",
+        ) {
+            Switch(
+                checked = settings.enforceWithoutHomeAssistant,
+                onCheckedChange = { on -> onChange { it.copy(enforceWithoutHomeAssistant = on) } },
+            )
+        }
     }
 
     SettingsSection(title = "Morning location") {

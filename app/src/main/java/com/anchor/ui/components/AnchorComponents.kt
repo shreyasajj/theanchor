@@ -1,5 +1,6 @@
 package com.anchor.ui.components
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -56,12 +57,10 @@ fun AnchorCard(
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Surface(
-        modifier = modifier
-            .fillMaxWidth()
-            .clip(MaterialTheme.shapes.large)
-            .border(1.dp, borderColor, MaterialTheme.shapes.large),
+        modifier = modifier.fillMaxWidth(),
         color = containerColor,
         shape = MaterialTheme.shapes.large,
+        border = BorderStroke(1.dp, borderColor),
     ) {
         Column(Modifier.padding(contentPadding), content = content)
     }

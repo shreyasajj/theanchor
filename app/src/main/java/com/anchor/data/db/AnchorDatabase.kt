@@ -6,6 +6,8 @@ import androidx.room.TypeConverter
 import androidx.room.TypeConverters
 import com.anchor.data.usage.AppLimit
 import com.anchor.data.usage.AppLimitDao
+import com.anchor.data.usage.EarlyLock
+import com.anchor.data.usage.EarlyLockDao
 
 class PhaseConverter {
     @TypeConverter fun toPhase(value: String): Phase = Phase.valueOf(value)
@@ -13,8 +15,8 @@ class PhaseConverter {
 }
 
 @Database(
-    entities = [DailyLog::class, CustomQuestion::class, AppLimit::class],
-    version = 1,
+    entities = [DailyLog::class, CustomQuestion::class, AppLimit::class, EarlyLock::class],
+    version = 2,
     exportSchema = false,
 )
 @TypeConverters(PhaseConverter::class)
@@ -22,4 +24,5 @@ abstract class AnchorDatabase : RoomDatabase() {
     abstract fun dailyLogDao(): DailyLogDao
     abstract fun customQuestionDao(): CustomQuestionDao
     abstract fun appLimitDao(): AppLimitDao
+    abstract fun earlyLockDao(): EarlyLockDao
 }

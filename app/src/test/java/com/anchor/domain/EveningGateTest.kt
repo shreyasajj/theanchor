@@ -150,6 +150,28 @@ class EveningGateTest {
     }
 
     @Test
+    fun `with the ask-anyway toggle, an unreachable Home Assistant shows the questions`() = runTest {
+        val settings = configured().copy(enforceWithoutHomeAssistant = true)
+        val decision = gate(settings = settings, haStates = mapOf("device_tracker.pixel" to HaResult.Unavailable))
+            .decide(youtube)
+        assertThat(decision).isEqualTo(EveningDecision.Strict)
+    }
+
+    @Test
+    fun `with the ask-anyway toggle, an unconfigured Home Assistant shows the questions`() = runTest {
+        val settings = AnchorSettings(blockedPackages = setOf(youtube), enforceWithoutHomeAssistant = true)
+        assertThat(gate(settings = settings).decide(youtube)).isEqualTo(EveningDecision.Strict)
+    }
+
+    @Test
+    fun `the ask-anyway toggle still gives a confirmed away reading the simple delay`() = runTest {
+        val settings = configured().copy(enforceWithoutHomeAssistant = true)
+        val decision = gate(settings = settings, haStates = mapOf("device_tracker.pixel" to state("not_home")))
+            .decide(youtube)
+        assertThat(decision).isEqualTo(EveningDecision.SimpleDelay)
+    }
+
+    @Test
     fun `simple delay when the user is away from home`() = runTest {
         val decision = gate(haStates = mapOf("device_tracker.pixel" to state("not_home"))).decide(youtube)
         assertThat(decision).isEqualTo(EveningDecision.SimpleDelay)

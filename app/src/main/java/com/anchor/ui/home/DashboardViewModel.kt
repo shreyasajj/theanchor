@@ -26,6 +26,8 @@ data class UsageRow(
     val limitMinutes: Int?,
     val opens: Int,
     val limitOpens: Int?,
+    /** Opens weighted for limits (an early-lock return costs half). */
+    val openUnits: Double = opens.toDouble(),
 ) {
     /** Progress through the time budget, or null when there is none. */
     val timeFraction: Float?
@@ -35,7 +37,7 @@ data class UsageRow(
 
     val isExhausted: Boolean
         get() = (limitMinutes != null && usedMinutes >= limitMinutes) ||
-            (limitOpens != null && opens >= limitOpens)
+            (limitOpens != null && openUnits >= limitOpens)
 }
 
 /** One column in the seven-day strip. */
@@ -90,6 +92,7 @@ class DashboardViewModel(
                         usedMinutes = (summary.foregroundMillis / 60_000L).toInt(),
                         limitMinutes = limit.dailyMinutes,
                         opens = summary.opens,
+                        openUnits = summary.openUnits,
                         limitOpens = limit.dailyOpens,
                     )
                 }

@@ -1,5 +1,6 @@
 package com.anchor.domain
 
+import com.anchor.data.usage.AppUsageSummary
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 
@@ -26,5 +27,25 @@ class SessionCapWatcherTest {
     @Test
     fun `no current session means no timer to arm`() {
         assertThat(SessionCapMath.remainingMillis(10, null, now)).isNull()
+    }
+
+    // --- Where the cap counts from ---
+
+    @Test
+    fun `a return inside the window keeps counting from the open's start`() {
+        val summary = AppUsageSummary(lastOpenStartAtMillis = now - 4 * minute)
+        assertThat(SessionCapMath.sessionStart(summary, 10, now)).isEqualTo(now - 4 * minute)
+    }
+
+    @Test
+    fun `a return after the window starts a fresh session now`() {
+        val summary = AppUsageSummary(lastOpenStartAtMillis = now - 15 * minute)
+        assertThat(SessionCapMath.sessionStart(summary, 10, now)).isEqualTo(now)
+    }
+
+    @Test
+    fun `a session already in the foreground is used when no open is recorded`() {
+        val summary = AppUsageSummary(currentSessionStartAtMillis = now - 2 * minute)
+        assertThat(SessionCapMath.sessionStart(summary, 10, now)).isEqualTo(now - 2 * minute)
     }
 }

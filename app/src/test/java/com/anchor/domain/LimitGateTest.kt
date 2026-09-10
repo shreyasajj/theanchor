@@ -9,6 +9,7 @@ import com.anchor.data.ha.HaStateDto
 import com.anchor.data.ha.KillSwitch
 import com.anchor.data.settings.AnchorSettings
 import com.anchor.data.usage.AppLimit
+import com.anchor.data.usage.EarlyLock
 import com.anchor.data.usage.UsageEvent
 import com.anchor.data.usage.UsageStatsSource
 import com.google.common.truth.Truth.assertThat
@@ -65,6 +66,7 @@ class LimitGateTest {
         val client = FakeHaClient(haResult)
         return LimitGate(
             appLimitDao = db.appLimitDao(),
+            earlyLockDao = db.earlyLockDao(),
             usageStatsSource = source,
             killSwitch = KillSwitch(client),
             anchorDate = AnchorDate(clock),
@@ -194,6 +196,86 @@ class LimitGateTest {
             }
         }).decide(app)
         assertThat(from).isLessThan(dayStartMillis)
+    }
+
+    // --- Session-window rejoin ---
+
+    @Test
+    fun `returning inside the session window skips the cooldown`() = runTest {
+        // 10-min sessions, 30-min cooldown. Opened at 655, left at 658, now 660.
+        db.appLimitDao().upsert(AppLimit(app, sessionMinutes = 10, cooldownMinutes = 30))
+        assertThat(gate(events = listOf(fg(655), bg(658))).decide(app)).isEqualTo(LimitDecision.Allow)
+    }
+
+    @Test
+    fun `returning inside the session window is not charged an open`() = runTest {
+        db.appLimitDao().upsert(AppLimit(app, sessionMinutes = 10, dailyOpens = 1))
+        // One open already spent at 100; the current one began at 655.
+        val events = listOf(fg(100), bg(110), fg(655), bg(658))
+        assertThat(gate(events = events).decide(app)).isEqualTo(LimitDecision.Allow)
+    }
+
+    @Test
+    fun `returning inside the session window skips the pre-open pause`() = runTest {
+        db.appLimitDao().upsert(AppLimit(app, sessionMinutes = 10, preOpenDelaySeconds = 30))
+        assertThat(gate(events = listOf(fg(655), bg(658))).decide(app)).isEqualTo(LimitDecision.Allow)
+    }
+
+    @Test
+    fun `returning inside the session window still respects the time budget`() = runTest {
+        db.appLimitDao().upsert(AppLimit(app, sessionMinutes = 10, dailyMinutes = 30))
+        val events = listOf(fg(100), bg(130), fg(655), bg(658))   // 33 minutes used
+        val decision = gate(events = events).decide(app)
+        assertThat((decision as LimitDecision.Blocked).reason).isEqualTo(LimitReason.DAILY_TIME)
+    }
+
+    @Test
+    fun `after the session window the cooldown applies again`() = runTest {
+        db.appLimitDao().upsert(AppLimit(app, sessionMinutes = 10, cooldownMinutes = 30))
+        // Opened at 640, left at 645; now is 660, past 640+10.
+        val decision = gate(events = listOf(fg(640), bg(645))).decide(app)
+        assertThat((decision as LimitDecision.Blocked).reason).isEqualTo(LimitReason.COOLDOWN)
+    }
+
+    // --- Early lock ---
+
+    @Test
+    fun `lockEarly records a lock only for a limited app`() = runTest {
+        assertThat(gate().lockEarly(app)).isFalse()
+        db.appLimitDao().upsert(AppLimit(app, sessionMinutes = 10))
+        assertThat(gate().lockEarly(app)).isTrue()
+        assertThat(db.earlyLockDao().since(app, 0)).containsExactly(clock.millis())
+    }
+
+    @Test
+    fun `an early lock ends the session window so a return is a new open`() = runTest {
+        db.appLimitDao().upsert(AppLimit(app, sessionMinutes = 10, preOpenDelaySeconds = 30))
+        db.earlyLockDao().insert(EarlyLock(packageName = app, atMillis = dayStartMillis + 658 * minute))
+        // Would rejoin (opened at 655) if not for the lock; now it gets the pause.
+        assertThat(gate(events = listOf(fg(655), bg(658))).decide(app)).isEqualTo(LimitDecision.Pause(30))
+    }
+
+    @Test
+    fun `an early lock starts the cooldown`() = runTest {
+        db.appLimitDao().upsert(AppLimit(app, cooldownMinutes = 30))
+        db.earlyLockDao().insert(EarlyLock(packageName = app, atMillis = dayStartMillis + 650 * minute))
+        val decision = gate(events = listOf(fg(600), bg(640))).decide(app) as LimitDecision.Blocked
+        assertThat(decision.reason).isEqualTo(LimitReason.COOLDOWN)
+        assertThat(decision.resetsAtMillis).isEqualTo(dayStartMillis + 680 * minute)
+    }
+
+    @Test
+    fun `the return after an early lock costs half an open`() = runTest {
+        db.appLimitDao().upsert(AppLimit(app, dailyOpens = 2))
+        db.earlyLockDao().insert(EarlyLock(packageName = app, atMillis = dayStartMillis + 115 * minute))
+        // Opens at 100 (1.0), 120 (0.5, after the lock), 300 (1.0) = 2.5 > 2.
+        val events = listOf(fg(100), bg(110), fg(120), bg(130), fg(300), bg(310))
+        val decision = gate(events = events).decide(app)
+        assertThat((decision as LimitDecision.Blocked).reason).isEqualTo(LimitReason.DAILY_OPENS)
+
+        // Without the half-open the same day would be exactly 2, and allowed.
+        val summary = gate(events = events).summaryFor(app)
+        assertThat(summary.openUnits).isEqualTo(2.5)
     }
 
     // --- Pre-open pause ---

@@ -1,6 +1,7 @@
 package com.anchor.domain
 
 import com.anchor.data.usage.AppLimitDao
+import com.anchor.data.usage.AppUsageSummary
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -19,6 +20,19 @@ object SessionCapMath {
         val start = currentSessionStartAtMillis ?: return null
         val elapsed = nowMillis - start
         return maxOf(0L, sessionMinutes * 60_000L - elapsed)
+    }
+
+    /**
+     * Where the session cap counts from. A return inside the cap's window
+     * continues the earlier open, so the clock keeps running from that
+     * open's start; otherwise this launch starts a fresh one.
+     */
+    fun sessionStart(summary: AppUsageSummary, sessionMinutes: Int, nowMillis: Long): Long {
+        val window = sessionMinutes * 60_000L
+        return summary.lastOpenStartAtMillis
+            ?.takeIf { nowMillis - it < window }
+            ?: summary.currentSessionStartAtMillis
+            ?: nowMillis
     }
 }
 
@@ -48,12 +62,12 @@ class SessionCapWatcher(
                 ?.sessionMinutes
                 ?: return@launch
 
+            val now = anchorDate.nowMillis()
             val summary = limitGate.summaryFor(packageName)
             val remaining = SessionCapMath.remainingMillis(
                 sessionMinutes = cap,
-                currentSessionStartAtMillis = summary.currentSessionStartAtMillis
-                    ?: anchorDate.nowMillis(),   // event not logged yet; assume now
-                nowMillis = anchorDate.nowMillis(),
+                currentSessionStartAtMillis = SessionCapMath.sessionStart(summary, cap, now),
+                nowMillis = now,
             ) ?: return@launch
 
             watchedPackage = packageName

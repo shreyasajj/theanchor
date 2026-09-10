@@ -3,8 +3,11 @@ package com.anchor.domain
 import com.anchor.data.ha.KillSwitch
 import com.anchor.data.settings.AnchorSettings
 import com.anchor.data.settings.SettingsProvider
+import com.anchor.data.usage.AppLimit
 import com.anchor.data.usage.AppLimitDao
 import com.anchor.data.usage.AppUsageSummary
+import com.anchor.data.usage.EarlyLock
+import com.anchor.data.usage.EarlyLockDao
 import com.anchor.data.usage.UsageCalculator
 import com.anchor.data.usage.UsageEventMapping
 import com.anchor.data.usage.UsageStatsSource
@@ -32,6 +35,7 @@ sealed interface LimitDecision {
 @Singleton
 class LimitGate @Inject constructor(
     private val appLimitDao: AppLimitDao,
+    private val earlyLockDao: EarlyLockDao,
     private val usageStatsSource: UsageStatsSource,
     private val killSwitch: KillSwitch,
     private val anchorDate: AnchorDate,
@@ -45,12 +49,24 @@ class LimitGate @Inject constructor(
         if (killSwitch.blockingDisabled(settings)) return LimitDecision.Allow
 
         val now = anchorDate.nowMillis()
-        val summary = summarize(packageName, settings, now)
+        val summary = summarize(packageName, limit, settings, now)
         val nextReset = anchorDate.nextUsageResetMillis(settings.dayResetMinute)
 
-        // 1. Cooldown: the most immediate and most specific answer.
+        // 0. Coming back inside the session window is the same open: no
+        //    cooldown, no open charged, no pause. Only the time budget applies.
+        if (rejoinsOpen(limit, summary, now)) {
+            limit.dailyMinutes?.let { maxMinutes ->
+                if (summary.foregroundMillis >= maxMinutes * 60_000L) {
+                    return LimitDecision.Blocked(LimitReason.DAILY_TIME, nextReset)
+                }
+            }
+            return LimitDecision.Allow
+        }
+
+        // 1. Cooldown: the most immediate and most specific answer. An early
+        //    lock counts as a close for this purpose.
         limit.cooldownMinutes?.let { cooldown ->
-            val lastEnd = summary.lastForegroundEndAtMillis
+            val lastEnd = listOfNotNull(summary.lastForegroundEndAtMillis, lastEarlyLock).maxOrNull()
             if (lastEnd != null) {
                 val availableAt = lastEnd + cooldown * 60_000L
                 if (now < availableAt) {
@@ -63,7 +79,7 @@ class LimitGate @Inject constructor(
         //    not have reached UsageStatsManager yet, so this errs toward
         //    allowing by at most one open.
         limit.dailyOpens?.let { maxOpens ->
-            if (summary.opens > maxOpens) {
+            if (summary.openUnits > maxOpens) {
                 return LimitDecision.Blocked(LimitReason.DAILY_OPENS, nextReset)
             }
         }
@@ -83,21 +99,50 @@ class LimitGate @Inject constructor(
         }
     }
 
+    /**
+     * Records that the user locked [packageName] early. The open in progress
+     * ends here; the next one costs half.
+     */
+    suspend fun lockEarly(packageName: String): Boolean {
+        val limit = appLimitDao.find(packageName)?.takeIf { it.enabled && it.hasAnyLimit } ?: return false
+        earlyLockDao.insert(EarlyLock(packageName = packageName, atMillis = anchorDate.nowMillis()))
+        return true
+    }
+
     /** Exposed for the dashboard and the session-cap watcher. */
-    suspend fun summaryFor(packageName: String): AppUsageSummary =
-        summarize(packageName, settingsProvider(), anchorDate.nowMillis())
+    suspend fun summaryFor(packageName: String): AppUsageSummary {
+        val limit = appLimitDao.find(packageName)
+        return summarize(packageName, limit, settingsProvider(), anchorDate.nowMillis())
+    }
+
+    /** The most recent early lock seen by the last [summarize] call. */
+    private var lastEarlyLock: Long? = null
+
+    /** True when a launch now would continue the previous open rather than start a new one. */
+    private fun rejoinsOpen(limit: AppLimit, summary: AppUsageSummary, now: Long): Boolean {
+        val window = limit.sessionMinutes?.let { it * 60_000L } ?: return false
+        val openStart = summary.lastOpenStartAtMillis ?: return false
+        val lockedSince = lastEarlyLock?.let { it >= openStart } ?: false
+        return !lockedSince && now - openStart < window
+    }
 
     private suspend fun summarize(
         packageName: String,
+        limit: AppLimit?,
         settings: AnchorSettings,
         nowMillis: Long,
     ): AppUsageSummary {
         val dayStart = anchorDate.usageDayStartMillis(settings.dayResetMinute)
+        val from = UsageEventMapping.queryFrom(dayStart)
+        val earlyLocks = earlyLockDao.since(packageName, from)
+        lastEarlyLock = earlyLocks.lastOrNull()
         return UsageCalculator.summarize(
-            events = usageStatsSource.events(UsageEventMapping.queryFrom(dayStart), nowMillis),
+            events = usageStatsSource.events(from, nowMillis),
             packageName = packageName,
             windowStartMillis = dayStart,
             nowMillis = nowMillis,
+            sessionWindowMillis = limit?.sessionMinutes?.let { it * 60_000L },
+            earlyLocksMillis = earlyLocks,
         )
     }
 }

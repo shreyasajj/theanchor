@@ -21,8 +21,10 @@ android {
 
     buildTypes {
         release {
-            // Personal sideload: keep stack traces readable.
+            // Personal sideload: keep stack traces readable, but ship a real
+            // release build. Debug Compose is markedly slower to scroll.
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
     compileOptions {

@@ -59,6 +59,7 @@ class SettingsRepositoryTest {
         assertThat(s.dayResetMinute).isEqualTo(4 * 60)
         assertThat(s.killSwitchFailOpenOnOutage).isFalse()
         assertThat(s.noteFormat).isEqualTo(NoteFormat.PLAIN)
+        assertThat(s.enforceWithoutHomeAssistant).isFalse()
     }
 
     @Test
@@ -98,9 +99,11 @@ class SettingsRepositoryTest {
                 dayResetMinute = 3 * 60 + 30,
                 killSwitchFailOpenOnOutage = true,
                 noteFormat = NoteFormat.OBSIDIAN,
+                enforceWithoutHomeAssistant = true,
             )
         }
         val s = repo.current()
+        assertThat(s.enforceWithoutHomeAssistant).isTrue()
         assertThat(s.dayResetMinute).isEqualTo(210)
         assertThat(s.killSwitchFailOpenOnOutage).isTrue()
         assertThat(s.noteFormat).isEqualTo(NoteFormat.OBSIDIAN)

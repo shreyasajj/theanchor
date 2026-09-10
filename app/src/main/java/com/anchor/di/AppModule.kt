@@ -21,6 +21,7 @@ import com.anchor.data.settings.SettingsProvider
 import com.anchor.data.settings.SettingsRepository
 import com.anchor.data.usage.AndroidUsageStatsSource
 import com.anchor.data.usage.AppLimitDao
+import com.anchor.data.usage.EarlyLockDao
 import com.anchor.data.usage.UsageStatsSource
 import com.jakewharton.retrofit2.converter.kotlinx.serialization.asConverterFactory
 import dagger.Module
@@ -73,6 +74,8 @@ object AppModule {
     @Provides fun provideCustomQuestionDao(db: AnchorDatabase): CustomQuestionDao = db.customQuestionDao()
 
     @Provides fun provideAppLimitDao(db: AnchorDatabase): AppLimitDao = db.appLimitDao()
+
+    @Provides fun provideEarlyLockDao(db: AnchorDatabase): EarlyLockDao = db.earlyLockDao()
 
     // --- Settings ---
 

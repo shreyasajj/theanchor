@@ -10,8 +10,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Icon
@@ -46,47 +46,28 @@ fun DashboardScreen(
     onOpenSettings: () -> Unit,
     onFixPermission: (String) -> Unit,
 ) {
-    Column(
-        Modifier
-            .fillMaxSize()
-            .statusBarsPadding()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp)
+    val setup = state.permissions?.takeIf { !it.isFullyConfigured }
+    // LazyColumn so each card is laid out once and reused, rather than the
+    // whole page being measured on every frame of a scroll.
+    LazyColumn(
+        modifier = Modifier.fillMaxSize().statusBarsPadding(),
+        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 40.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Spacer(Modifier.height(20.dp))
-        Header(state, onOpenSettings)
-        Spacer(Modifier.height(24.dp))
-
-        if (state.overrideStatus == OverrideStatus.ACTIVE) {
-            OverrideBanner()
-            Spacer(Modifier.height(14.dp))
-        }
-
-        state.permissions?.takeIf { !it.isFullyConfigured }?.let { permissions ->
-            SetupCard(permissions, onFixPermission)
-            Spacer(Modifier.height(14.dp))
-        }
-
-        TodayCard(state)
-        Spacer(Modifier.height(14.dp))
-
-        if (state.usage.isNotEmpty()) {
-            LimitsCard(state.usage)
-            Spacer(Modifier.height(14.dp))
-        }
-
-        WeekCard(state.week)
-        Spacer(Modifier.height(14.dp))
-
-        StatusCard(state)
-        Spacer(Modifier.height(40.dp))
+        item(key = "header") { Header(state, onOpenSettings) }
+        if (state.overrideStatus == OverrideStatus.ACTIVE) item(key = "override") { OverrideBanner() }
+        if (setup != null) item(key = "setup") { SetupCard(setup, onFixPermission) }
+        item(key = "today") { TodayCard(state) }
+        if (state.usage.isNotEmpty()) item(key = "limits") { LimitsCard(state.usage) }
+        item(key = "week") { WeekCard(state.week) }
+        item(key = "status") { StatusCard(state) }
     }
 }
 
 @Composable
 private fun Header(state: DashboardUiState, onOpenSettings: () -> Unit) {
     val today = state.week.lastOrNull()?.date?.let { LocalDate.parse(it) }
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+    Row(Modifier.fillMaxWidth().padding(bottom = 10.dp), verticalAlignment = Alignment.Top) {
         Column(Modifier.weight(1f)) {
             Eyebrow("The Anchor")
             Spacer(Modifier.height(6.dp))
@@ -163,6 +144,9 @@ private fun TodayCard(state: DashboardUiState) {
     }
 }
 
+private fun formatUnits(units: Double): String =
+    if (units == units.toLong().toDouble()) units.toLong().toString() else "%.1f".format(units)
+
 private fun firstAnswer(log: DailyLog, morning: Boolean): String? =
     if (morning) log.mission ?: log.avoiding else log.led ?: log.softened ?: log.faked
 
@@ -198,7 +182,7 @@ private fun LimitsCard(rows: List<UsageRow>) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(row.label, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
                 val time = row.limitMinutes?.let { "${row.usedMinutes} / $it min" } ?: "${row.usedMinutes} min"
-                val opens = row.limitOpens?.let { "  ·  ${row.opens} / $it opens" } ?: ""
+                val opens = row.limitOpens?.let { "  ·  ${formatUnits(row.openUnits)} / $it opens" } ?: ""
                 Text(
                     text = time + opens,
                     style = MaterialTheme.typography.bodySmall,
