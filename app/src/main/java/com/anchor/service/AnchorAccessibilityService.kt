@@ -134,10 +134,14 @@ class AnchorAccessibilityService : AccessibilityService() {
      * Tapping it opens a confirmation sheet; confirming ends the app's session
      * early, which starts any cooldown and makes the next open cost half.
      */
-    private val relockBubble by lazy {
-        RelockBubble(this) { target ->
-            startActivity(ConfirmLockActivity.intent(this, target))
-        }
+    private val relockBubble: RelockBubble by lazy {
+        RelockBubble(this, ::onBubbleTapped)
+    }
+
+    /** The button was tapped: swap it for the confirmation sheet. */
+    private fun onBubbleTapped(target: String) {
+        relockBubble.hideNow()
+        startActivity(ConfirmLockActivity.intent(this, target))
     }
 
     private val sessionCapWatcher by lazy {
@@ -147,6 +151,7 @@ class AnchorAccessibilityService : AccessibilityService() {
             appLimitDao = appLimitDao,
             anchorDate = anchorDate,
             onCapReached = { _, now ->
+                relockBubble.hideNow()
                 startActivity(LimitBlockedActivity.intent(this, LimitReason.SESSION_CAP, now, lastForegroundPackage))
             },
         )
@@ -180,9 +185,16 @@ class AnchorAccessibilityService : AccessibilityService() {
                 is ForegroundAction.Ignore -> {
                     // Leaving a capped app for the dialer must stop its timer.
                     sessionCapWatcher.cancel()
-                    // Includes our own screens: the confirmation sheet has its
-                    // own buttons, and returning to the app shows this again.
-                    relockBubble.hide()
+
+                    // The button is deliberately left alone here. Ignore covers
+                    // system windows, the keyboard and toasts, which come and
+                    // go in an instant, and -- the trap -- our own overlay:
+                    // adding the button raises a window event for com.anchor,
+                    // so hiding on that made the button hide itself about a
+                    // second after appearing. Departures arrive instead as
+                    // EvaluateEvening for the launcher or the next app, and
+                    // our own full-screen screens hide it where they are
+                    // launched, below.
                 }
 
                 is ForegroundAction.ReassertMorningLock -> {
@@ -225,15 +237,22 @@ class AnchorAccessibilityService : AccessibilityService() {
 
                     when (val route = LimitRouting.route(limit, evening)) {
                         is Route.None -> Unit
-                        is Route.StrictEvening -> launchLock(EveningLockActivity::class.java, target)
-                        is Route.Pause ->
+                        is Route.StrictEvening -> {
+                            relockBubble.hideNow()
+                            launchLock(EveningLockActivity::class.java, target)
+                        }
+                        is Route.Pause -> {
+                            relockBubble.hideNow()
                             startActivity(PauseActivity.intent(this@AnchorAccessibilityService, route.seconds, target))
-                        is Route.Blocked ->
+                        }
+                        is Route.Blocked -> {
+                            relockBubble.hideNow()
                             startActivity(
                                 LimitBlockedActivity.intent(
                                     this@AnchorAccessibilityService, route.reason, route.resetsAtMillis, target,
                                 )
                             )
+                        }
                     }
                 }
             }
@@ -256,7 +275,7 @@ class AnchorAccessibilityService : AccessibilityService() {
     override fun onInterrupt() = Unit
 
     override fun onDestroy() {
-        relockBubble.hide()
+        relockBubble.hideNow()
         sessionCapWatcher.cancel()
         scope.cancel()
         super.onDestroy()

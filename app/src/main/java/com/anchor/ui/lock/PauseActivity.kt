@@ -2,6 +2,7 @@ package com.anchor.ui.lock
 
 import android.content.Context
 import android.content.Intent
+import android.content.Intent as AndroidIntent
 import android.os.Bundle
 import android.os.SystemClock
 import androidx.activity.ComponentActivity
@@ -203,6 +204,20 @@ class PauseActivity : ComponentActivity() {
                 .addCategory(Intent.CATEGORY_HOME)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         )
+    }
+
+    /**
+     * This activity is singleInstance, so relaunching it while the old
+     * instance is merely stopped delivers a new intent instead of creating it
+     * afresh. Without recreating, the countdown would carry on from wherever
+     * it was left, which after walking away is almost always zero: the wait
+     * would be over before it began. Start the whole screen again.
+     */
+    override fun onNewIntent(intent: AndroidIntent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        completed = true    // this instance is being replaced, not abandoned
+        recreate()
     }
 
     /**

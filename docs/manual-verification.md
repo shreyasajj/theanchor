@@ -119,6 +119,10 @@ skipped; with it off, confirm the evening pause still appears.
 6. Start a video in the limited app. Verify the button is still reachable but
    faded, and that turning off "Floating lock button" in Settings removes it
    entirely.
+6b. Watch it for a full minute without touching anything. It must stay put:
+   no blinking out and back. Open and close the notification shade and the
+   keyboard; it should survive both. It should disappear only when you
+   actually leave for another app or the home screen.
 7. If you previously enabled the system accessibility shortcut for The
    Anchor, turn it off under Android Settings → Accessibility → The Anchor →
    shortcut. The app no longer uses it.

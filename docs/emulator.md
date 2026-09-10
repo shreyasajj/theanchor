@@ -79,6 +79,22 @@ The emulator would otherwise show the Setup card instead of the dashboard:
 The export folder is not granted, because it is a Storage Access Framework
 folder the user must pick by hand. The Setup card will still list it.
 
+## Measuring the floating button
+
+`screencap` does not capture `TYPE_ACCESSIBILITY_OVERLAY` windows, so the
+button never appears in a screenshot even when it is plainly on screen. It is
+also absent from the window list in `dumpsys window windows`. The measure that
+does work is the app's own window session:
+
+```bash
+adb -e shell dumpsys window sessions | grep -B1 mPackageName=com.anchor
+# numWindow=1  -> the button is up
+# numWindow=0  -> it is not
+```
+
+Chasing this with the wrong probe cost real time: the button looked absent
+when it was present, and present when it was not.
+
 ## Two traps
 
 **Force-stopping the app disables its accessibility service.** Android will not

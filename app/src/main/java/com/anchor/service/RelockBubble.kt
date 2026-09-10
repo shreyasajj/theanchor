@@ -5,9 +5,9 @@ import android.content.Context
 import android.graphics.PixelFormat
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
-import android.view.View
 import android.view.WindowManager
 import android.widget.ImageView
 import com.anchor.R
@@ -37,10 +37,12 @@ object BubbleTouch {
  * one app and hide it for another. An overlay we own appears exactly when it is
  * useful and goes away the moment it is not.
  *
- * It fades to nearly invisible after a few seconds so it does not sit over a
- * film, comes back to full opacity when touched, and can be dragged anywhere.
- * All window work is posted to the main thread, since decisions are made on a
- * background dispatcher.
+ * **Staying put is the hard part.** Android fires a window-state change for
+ * every transient window: the keyboard, a toast, the status bar, a dialog. Each
+ * one looks like "some other package is in front", and naively hiding on each
+ * would tear the view down and rebuild it a moment later, which reads as
+ * flicker. So a hide is deferred and cancelled by any show that follows it, and
+ * a show for the app already being displayed does nothing at all.
  */
 class RelockBubble(
     private val context: Context,
@@ -59,14 +61,24 @@ class RelockBubble(
     private var savedY = Int.MIN_VALUE
 
     private val dim = Runnable { view?.animate()?.alpha(DIM_ALPHA)?.setDuration(600)?.start() }
+    private val remove = Runnable { removeNow() }
 
     fun show(packageName: String) {
         main.post {
-            target = packageName
+            // A pending hide was a transient window, not a real departure.
+            main.removeCallbacks(remove)
+
             if (view != null) {
-                wake()
+                // Already up. Only stir it if it is now for a different app;
+                // otherwise every stray window event would re-brighten it and
+                // restart the fade, which looks like a pulse.
+                if (target != packageName) {
+                    target = packageName
+                    wake()
+                }
                 return@post
             }
+
             val wm = windowManager ?: return@post
             val bubble = build()
             val lp = layoutParams()
@@ -74,20 +86,42 @@ class RelockBubble(
                 .onSuccess {
                     view = bubble
                     params = lp
+                    target = packageName
                     wake()
+                    Log.d(TAG, "shown for $packageName")
                 }
+                // Silently swallowing this hid a real failure once already.
+                .onFailure { Log.w(TAG, "could not add the button", it) }
         }
     }
 
+    /**
+     * Take it down shortly. Deferred so that a keyboard opening, or any other
+     * momentary window, does not blink the button out and back.
+     */
     fun hide() {
         main.post {
-            main.removeCallbacks(dim)
-            val current = view ?: return@post
-            runCatching { windowManager?.removeView(current) }
-            view = null
-            params = null
-            target = null
+            if (view == null) return@post
+            main.removeCallbacks(remove)
+            main.postDelayed(remove, HIDE_DELAY_MILLIS)
         }
+    }
+
+    /** Take it down at once, for shutdown. */
+    fun hideNow() {
+        main.post {
+            main.removeCallbacks(remove)
+            removeNow()
+        }
+    }
+
+    private fun removeNow() {
+        main.removeCallbacks(dim)
+        val current = view ?: return
+        runCatching { windowManager?.removeView(current) }
+        view = null
+        params = null
+        target = null
     }
 
     /** Full opacity now, fading back down if it is left alone. */
@@ -175,7 +209,11 @@ class RelockBubble(
     }
 
     private companion object {
+        const val TAG = "AnchorBubble"
         const val DIM_ALPHA = 0.28f
         const val DIM_AFTER_MILLIS = 4_000L
+
+        /** Long enough to ride out a keyboard or a toast stealing focus. */
+        const val HIDE_DELAY_MILLIS = 800L
     }
 }
