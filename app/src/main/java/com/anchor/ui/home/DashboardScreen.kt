@@ -45,6 +45,8 @@ fun DashboardScreen(
     state: DashboardUiState,
     onOpenSettings: () -> Unit,
     onFixPermission: (String) -> Unit,
+    onAnswerMorning: () -> Unit,
+    onAnswerEvening: () -> Unit,
 ) {
     val setup = state.permissions?.takeIf { !it.isFullyConfigured }
     // LazyColumn so each card is laid out once and reused, rather than the
@@ -57,7 +59,7 @@ fun DashboardScreen(
         item(key = "header") { Header(state, onOpenSettings) }
         if (state.overrideStatus == OverrideStatus.ACTIVE) item(key = "override") { OverrideBanner() }
         if (setup != null) item(key = "setup") { SetupCard(setup, onFixPermission) }
-        item(key = "today") { TodayCard(state) }
+        item(key = "today") { TodayCard(state, onAnswerMorning, onAnswerEvening) }
         if (state.usage.isNotEmpty()) item(key = "limits") { LimitsCard(state.usage) }
         item(key = "week") { WeekCard(state.week) }
         item(key = "status") { StatusCard(state) }
@@ -125,7 +127,7 @@ private fun SetupCard(permissions: PermissionState, onFix: (String) -> Unit) {
 }
 
 @Composable
-private fun TodayCard(state: DashboardUiState) {
+private fun TodayCard(state: DashboardUiState, onAnswerMorning: () -> Unit, onAnswerEvening: () -> Unit) {
     val s = state.settings
     SectionCard(title = "Today") {
         PhaseRow(
@@ -133,6 +135,7 @@ private fun TodayCard(state: DashboardUiState) {
             window = "${formatMinute(s.morningStartMinute)} – ${formatMinute(s.morningEndMinute)}",
             done = state.today?.morningCompletedAt != null,
             preview = state.today?.let { firstAnswer(it, morning = true) },
+            onAnswer = onAnswerMorning,
         )
         SoftDivider(Modifier.padding(vertical = 12.dp))
         PhaseRow(
@@ -140,6 +143,12 @@ private fun TodayCard(state: DashboardUiState) {
             window = "${formatMinute(s.eveningStartMinute)} – ${formatMinute(s.eveningEndMinute)}",
             done = state.today?.eveningCompletedAt != null,
             preview = state.today?.let { firstAnswer(it, morning = false) },
+            onAnswer = onAnswerEvening,
+        )
+        Hint(
+            "The morning check-in appears on its own during the window when you are home. " +
+                "Answer now to do it by hand at any time.",
+            Modifier.padding(top = 12.dp),
         )
     }
 }
@@ -151,7 +160,7 @@ private fun firstAnswer(log: DailyLog, morning: Boolean): String? =
     if (morning) log.mission ?: log.avoiding else log.led ?: log.softened ?: log.faked
 
 @Composable
-private fun PhaseRow(name: String, window: String, done: Boolean, preview: String?) {
+private fun PhaseRow(name: String, window: String, done: Boolean, preview: String?, onAnswer: () -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         StatusDot(done, size = 12)
         Spacer(Modifier.width(14.dp))
@@ -170,7 +179,7 @@ private fun PhaseRow(name: String, window: String, done: Boolean, preview: Strin
             )
         }
         Spacer(Modifier.width(8.dp))
-        if (done) Pill("Done", PillTone.GOOD) else Pill("Pending")
+        if (done) Pill("Done", PillTone.GOOD) else TextButton(onClick = onAnswer) { Text("Answer now") }
     }
 }
 

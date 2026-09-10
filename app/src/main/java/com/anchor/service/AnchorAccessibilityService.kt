@@ -18,6 +18,8 @@ import com.anchor.domain.LimitDecision
 import com.anchor.domain.LimitGate
 import com.anchor.domain.LimitReason
 import com.anchor.domain.LockdownEnforcer
+import com.anchor.domain.MorningDecision
+import com.anchor.domain.MorningGate
 import com.anchor.domain.SessionCapWatcher
 import com.anchor.domain.SkipReason
 import com.anchor.ui.lock.EveningLockActivity
@@ -61,6 +63,39 @@ object LimitRouting {
  * Android emits several TYPE_WINDOW_STATE_CHANGED events per app launch;
  * without this the gates would be queried (and HA hit) several times per open.
  */
+/**
+ * After a pause screen is shown for an app, the app comes back to the front
+ * when the countdown ends, which is itself a foreground change. Without this
+ * the same launch would be paused again, forever.
+ */
+class PauseGrace(private val extraMillis: Long = 60_000) {
+    private var packageName: String? = null
+    private var untilMillis: Long = Long.MIN_VALUE
+
+    fun noteShown(packageName: String, seconds: Int, nowMillis: Long) {
+        this.packageName = packageName
+        untilMillis = nowMillis + seconds * 1000L + extraMillis
+    }
+
+    fun suppresses(packageName: String, nowMillis: Long): Boolean =
+        packageName == this.packageName && nowMillis < untilMillis
+}
+
+/**
+ * Throttles the morning re-check to once a minute. The gate's cheap checks
+ * (window, already done) cost nothing, but past them it calls Home Assistant.
+ */
+class MorningRecheck(private val intervalMillis: Long = 60_000) {
+    private var lastAtMillis: Long? = null
+
+    fun shouldCheck(nowMillis: Long): Boolean {
+        val last = lastAtMillis
+        if (last != null && nowMillis - last < intervalMillis) return false
+        lastAtMillis = nowMillis
+        return true
+    }
+}
+
 class PackageDebounce(private val windowMillis: Long = 3_000) {
     private var lastPackage: String? = null
     private var lastAtMillis: Long = Long.MIN_VALUE
@@ -87,6 +122,7 @@ class PackageDebounce(private val windowMillis: Long = 3_000) {
 class AnchorAccessibilityService : AccessibilityService() {
 
     @Inject lateinit var eveningGate: EveningGate
+    @Inject lateinit var morningGate: MorningGate
     @Inject lateinit var limitGate: LimitGate
     @Inject lateinit var appLimitDao: AppLimitDao
     @Inject lateinit var anchorDate: AnchorDate
@@ -95,6 +131,8 @@ class AnchorAccessibilityService : AccessibilityService() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val debounce = PackageDebounce()
+    private val pauseGrace = PauseGrace()
+    private val morningRecheck = MorningRecheck()
 
     /** The most recent non-system foreground package, for the relock button. */
     @Volatile private var lastForegroundPackage: String? = null
@@ -150,6 +188,18 @@ class AnchorAccessibilityService : AccessibilityService() {
 
         scope.launch {
             val settings = settingsRepository.current()
+
+            // The alarm is one shot at the window start. If that moment was
+            // missed (not home yet, HA down, phone off), keep asking while the
+            // phone is in use during the window, once a minute at most.
+            if (!enforcer.isActive && packageName != EveningGate.OWN_PACKAGE &&
+                morningRecheck.shouldCheck(System.currentTimeMillis()) &&
+                morningGate.decide() is MorningDecision.Lock
+            ) {
+                enforcer.begin()
+                return@launch
+            }
+
             when (
                 val action = ForegroundAppDecider.decide(
                     packageName = packageName,
@@ -177,7 +227,9 @@ class AnchorAccessibilityService : AccessibilityService() {
                     // debounced ones, so its timer tracks reality.
                     sessionCapWatcher.onForegroundApp(target)
 
-                    if (!debounce.shouldHandle(target, System.currentTimeMillis())) return@launch
+                    val now = System.currentTimeMillis()
+                    if (!debounce.shouldHandle(target, now)) return@launch
+                    if (pauseGrace.suppresses(target, now)) return@launch
 
                     // Limits first: a spent budget outranks the evening ritual.
                     val limit = limitGate.decide(target)
@@ -190,8 +242,10 @@ class AnchorAccessibilityService : AccessibilityService() {
                     when (val route = LimitRouting.route(limit, evening)) {
                         is Route.None -> Unit
                         is Route.StrictEvening -> launchLock(EveningLockActivity::class.java, target)
-                        is Route.Pause ->
+                        is Route.Pause -> {
+                            pauseGrace.noteShown(target, route.seconds, now)
                             startActivity(PauseActivity.intent(this@AnchorAccessibilityService, route.seconds, target))
+                        }
                         is Route.Blocked ->
                             startActivity(
                                 LimitBlockedActivity.intent(

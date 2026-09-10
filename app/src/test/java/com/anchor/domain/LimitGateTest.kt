@@ -201,6 +201,22 @@ class LimitGateTest {
     // --- Session-window rejoin ---
 
     @Test
+    fun `a fresh launch whose own foreground event is already logged is not a rejoin`() = runTest {
+        // The launch being decided (started now, never left) must still pay
+        // the pause; otherwise the pre-open pause never shows at all.
+        db.appLimitDao().upsert(AppLimit(app, sessionMinutes = 10, preOpenDelaySeconds = 30))
+        assertThat(gate(events = listOf(fg(660))).decide(app)).isEqualTo(LimitDecision.Pause(30))
+    }
+
+    @Test
+    fun `a fresh launch after an old open pays the cooldown and open`() = runTest {
+        db.appLimitDao().upsert(AppLimit(app, sessionMinutes = 10, cooldownMinutes = 30))
+        // Left at 645, launched again at 660 (logged). 660 - 640 > 10 min window.
+        val decision = gate(events = listOf(fg(640), bg(645), fg(660))).decide(app)
+        assertThat((decision as LimitDecision.Blocked).reason).isEqualTo(LimitReason.COOLDOWN)
+    }
+
+    @Test
     fun `returning inside the session window skips the cooldown`() = runTest {
         // 10-min sessions, 30-min cooldown. Opened at 655, left at 658, now 660.
         db.appLimitDao().upsert(AppLimit(app, sessionMinutes = 10, cooldownMinutes = 30))

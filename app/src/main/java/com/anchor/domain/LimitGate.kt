@@ -118,12 +118,19 @@ class LimitGate @Inject constructor(
     /** The most recent early lock seen by the last [summarize] call. */
     private var lastEarlyLock: Long? = null
 
-    /** True when a launch now would continue the previous open rather than start a new one. */
+    /**
+     * True when a launch now would continue the previous open rather than
+     * start a new one: the open began inside the session window, the user
+     * has left it at least once since (otherwise this launch *is* the open,
+     * whose own foreground event may already be logged), and it was not
+     * ended early on purpose.
+     */
     private fun rejoinsOpen(limit: AppLimit, summary: AppUsageSummary, now: Long): Boolean {
         val window = limit.sessionMinutes?.let { it * 60_000L } ?: return false
         val openStart = summary.lastOpenStartAtMillis ?: return false
+        val leftSince = summary.lastForegroundEndAtMillis?.let { it >= openStart } ?: false
         val lockedSince = lastEarlyLock?.let { it >= openStart } ?: false
-        return !lockedSince && now - openStart < window
+        return leftSince && !lockedSince && now - openStart < window
     }
 
     private suspend fun summarize(

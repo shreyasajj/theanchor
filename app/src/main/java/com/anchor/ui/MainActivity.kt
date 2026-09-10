@@ -29,6 +29,8 @@ import com.anchor.data.settings.SettingsRepository
 import com.anchor.data.usage.AppLimitDao
 import com.anchor.domain.AnchorDate
 import com.anchor.domain.LimitGate
+import com.anchor.domain.LockdownEnforcer
+import com.anchor.ui.lock.EveningLockActivity
 import com.anchor.service.AnchorAccessibilityService
 import com.anchor.service.AnchorForegroundService
 import com.anchor.service.MorningAlarmScheduler
@@ -53,6 +55,7 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var anchorDate: AnchorDate
     @Inject lateinit var killSwitch: KillSwitch
     @Inject lateinit var limitGate: LimitGate
+    @Inject lateinit var enforcer: LockdownEnforcer
     @Inject lateinit var scheduler: MorningAlarmScheduler
     @Inject lateinit var installedApps: InstalledAppsRepository
 
@@ -120,6 +123,8 @@ class MainActivity : ComponentActivity() {
                         DashboardScreen(
                             state = state,
                             onOpenSettings = { navController.navigate("settings") },
+                            onAnswerMorning = { enforcer.begin() },
+                            onAnswerEvening = { startActivity(Intent(this@MainActivity, EveningLockActivity::class.java)) },
                             onFixPermission = { item ->
                                 when (item) {
                                     PermissionState.ACCESSIBILITY ->
