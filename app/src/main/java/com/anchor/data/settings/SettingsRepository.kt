@@ -35,6 +35,7 @@ class SettingsRepository @Inject constructor(
         val EVENING_ROOMS = stringPreferencesKey("evening_rooms")
         val ENFORCE_WITHOUT_HA = booleanPreferencesKey("enforce_without_ha")
         val RELOCK_BUBBLE = booleanPreferencesKey("relock_bubble")
+        val PAUSES_OWED = stringSetPreferencesKey("pauses_owed")
         val KILL_ENABLED = booleanPreferencesKey("kill_enabled")
         val KILL_ENTITY = stringPreferencesKey("kill_entity")
         val KILL_STATE = stringPreferencesKey("kill_state")
@@ -69,6 +70,7 @@ class SettingsRepository @Inject constructor(
             prefs[Keys.EVENING_ROOMS] = formatRoomList(next.eveningAllowedRooms)
             prefs[Keys.ENFORCE_WITHOUT_HA] = next.enforceWithoutHomeAssistant
             prefs[Keys.RELOCK_BUBBLE] = next.showRelockBubble
+            prefs[Keys.PAUSES_OWED] = next.pausesOwed
             prefs[Keys.KILL_ENABLED] = next.killSwitchEnabled
             prefs[Keys.KILL_ENTITY] = next.killSwitchEntityId
             prefs[Keys.KILL_STATE] = next.killSwitchOverrideState
@@ -79,6 +81,18 @@ class SettingsRepository @Inject constructor(
             val tree = next.exportTreeUri
             if (tree == null) prefs.remove(Keys.EXPORT_TREE) else prefs[Keys.EXPORT_TREE] = tree
         }
+    }
+
+    /** Record that [packageName] was shown a pause it has not yet sat through. */
+    suspend fun owePause(packageName: String) {
+        if (packageName.isBlank()) return
+        update { it.copy(pausesOwed = it.pausesOwed + packageName) }
+    }
+
+    /** The pause was served, or no longer applies. */
+    suspend fun settlePause(packageName: String) {
+        if (packageName.isBlank()) return
+        update { it.copy(pausesOwed = it.pausesOwed - packageName) }
     }
 
     private fun Preferences.toSettings(): AnchorSettings {
@@ -100,6 +114,7 @@ class SettingsRepository @Inject constructor(
             eveningAllowedRooms = parseRoomList(this[Keys.EVENING_ROOMS] ?: ""),
             enforceWithoutHomeAssistant = this[Keys.ENFORCE_WITHOUT_HA] ?: d.enforceWithoutHomeAssistant,
             showRelockBubble = this[Keys.RELOCK_BUBBLE] ?: d.showRelockBubble,
+            pausesOwed = this[Keys.PAUSES_OWED] ?: d.pausesOwed,
             killSwitchEnabled = this[Keys.KILL_ENABLED] ?: d.killSwitchEnabled,
             killSwitchEntityId = this[Keys.KILL_ENTITY] ?: d.killSwitchEntityId,
             killSwitchOverrideState = this[Keys.KILL_STATE] ?: d.killSwitchOverrideState,

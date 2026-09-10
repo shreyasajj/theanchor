@@ -50,6 +50,14 @@ data class AnchorSettings(
      */
     val showRelockBubble: Boolean = true,
 
+    /**
+     * Apps that have been shown a pause they never sat through. Persisted,
+     * not held in memory: the app's process restarts routinely, and an
+     * in-memory debt is forgotten, which let a walked-away-from pause be
+     * treated as a session the user could simply rejoin.
+     */
+    val pausesOwed: Set<String> = emptySet(),
+
     // --- Remote kill switch ---
     val killSwitchEnabled: Boolean = false,
     val killSwitchEntityId: String = "",

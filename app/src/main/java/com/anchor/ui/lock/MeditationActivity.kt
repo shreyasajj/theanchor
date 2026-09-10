@@ -41,6 +41,7 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
+import com.anchor.data.settings.SettingsRepository
 import com.anchor.data.usage.MeditationSession
 import com.anchor.data.usage.MeditationSessionDao
 import com.anchor.domain.AnchorDate
@@ -66,6 +67,7 @@ class MeditationActivity : ComponentActivity() {
 
     @Inject lateinit var sessionDao: MeditationSessionDao
     @Inject lateinit var anchorDate: AnchorDate
+    @Inject lateinit var settingsRepository: SettingsRepository
 
     private var blockedPackage: String? = null
 
@@ -314,7 +316,10 @@ class MeditationActivity : ComponentActivity() {
     /** Sitting served the pause, so going in now is allowed. */
     private fun openAnyway() {
         resolved = true
-        blockedPackage?.let { PauseLedger.complete(it, System.currentTimeMillis()) }
+        blockedPackage?.let {
+            PauseLedger.complete(it, System.currentTimeMillis())
+            lifecycleScope.launch { settingsRepository.settlePause(it) }
+        }
         finish()
     }
 

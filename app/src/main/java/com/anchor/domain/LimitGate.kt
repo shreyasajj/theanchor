@@ -16,6 +16,19 @@ import javax.inject.Singleton
 
 enum class LimitReason { DAILY_TIME, DAILY_OPENS, COOLDOWN, SESSION_CAP }
 
+/**
+ * How long an open must have been running before returning to it counts as
+ * rejoining rather than opening afresh.
+ *
+ * Launching an app emits a foreground event and then, a fraction of a second
+ * later, a background one: a splash handing over to the real activity, or the
+ * launcher animation settling. Showing the pause screen does the same. Any of
+ * those look identical to "the user left", so without a floor the very first
+ * launch of an app reads as a return to an open that is 200ms old, and the
+ * pause is skipped for good.
+ */
+const val MIN_ESTABLISHED_OPEN_MILLIS = 15_000L
+
 sealed interface LimitDecision {
     data object Allow : LimitDecision
 
@@ -50,17 +63,26 @@ class LimitGate @Inject constructor(
 
         val now = anchorDate.nowMillis()
         val summary = summarize(packageName, limit, settings, now)
+        val pauseOwed = packageName in settings.pausesOwed
         val nextReset = anchorDate.nextUsageResetMillis(settings.dayResetMinute)
 
-        // 0. Coming back inside the session window is the same open: no
-        //    cooldown, no open charged, no pause. Only the time budget applies.
-        if (rejoinsOpen(limit, summary, now)) {
+
+        // 0. Coming back inside the session window is the same open, so it
+        //    costs no second open and serves no cooldown. The pause is a
+        //    different matter: it is friction on *entering* the app, and
+        //    coming back is entering, so it still applies. Skipping it here
+        //    was what let a walked-away-from pause never return.
+        if (rejoinsOpen(limit, summary, now, pauseOwed)) {
             limit.dailyMinutes?.let { maxMinutes ->
                 if (summary.foregroundMillis >= maxMinutes * 60_000L) {
                     return LimitDecision.Blocked(LimitReason.DAILY_TIME, nextReset)
                 }
             }
-            return LimitDecision.Allow
+            return if (limit.preOpenDelaySeconds > 0) {
+                LimitDecision.Pause(limit.preOpenDelaySeconds)
+            } else {
+                LimitDecision.Allow
+            }
         }
 
         // 1. Cooldown: the most immediate and most specific answer. An early
@@ -142,13 +164,23 @@ class LimitGate @Inject constructor(
      * walking away from the pause and coming back reads as a legitimate
      * rejoin, and the pause is skipped entirely.
      */
-    private fun rejoinsOpen(limit: AppLimit, summary: AppUsageSummary, now: Long): Boolean {
+    private fun rejoinsOpen(
+        limit: AppLimit,
+        summary: AppUsageSummary,
+        now: Long,
+        pauseOwed: Boolean,
+    ): Boolean {
         val window = limit.sessionMinutes?.let { it * 60_000L } ?: return false
         val openStart = summary.lastOpenStartAtMillis ?: return false
-        if (PauseLedger.hasUnfinishedPause(limit.packageName)) return false
+        if (pauseOwed || PauseLedger.hasUnfinishedPause(limit.packageName)) return false
+
+        val age = now - openStart
+        // Old enough to be a real session, and still inside the cap's window.
+        if (age < MIN_ESTABLISHED_OPEN_MILLIS || age >= window) return false
+
         val leftSince = summary.lastForegroundEndAtMillis?.let { it >= openStart } ?: false
         val lockedSince = lastEarlyLock?.let { it >= openStart } ?: false
-        return leftSince && !lockedSince && now - openStart < window
+        return leftSince && !lockedSince
     }
 
     private suspend fun summarize(

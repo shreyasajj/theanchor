@@ -69,9 +69,15 @@ the session cap, which has to interrupt an app already in use, so it is a timer 
 accessibility service owns and cancels whenever the foreground app changes.
 
 **Leaving and coming back.** If an app has a session cap, returning before that
-cap's window has elapsed continues the same open: no cooldown, no open charged, no
-pause. Only the daily time budget still applies, and the cap keeps counting from the
-first open, so stepping out does not extend the session.
+cap's window has elapsed continues the same open: no second open charged and no
+cooldown served. The pause still appears, because it is friction on *entering* the
+app and coming back is entering. The daily time budget still applies, and the cap
+keeps counting from the first open, so stepping out does not extend the session.
+
+An open has to have been running for at least fifteen seconds before returning to it
+counts as a rejoin. Launching an app emits a foreground event and then a background
+one a fraction of a second later, and without that floor the launch itself looks
+like leaving and returning.
 
 **The pause screen.** Before a limited app opens you see what it will cost: minutes
 left today, opens left today, and time left in this session. Three ways out:
@@ -198,7 +204,7 @@ the default.
 Requires JDK 17 and an Android SDK with platform 35. `minSdk` is 33.
 
 ```bash
-./gradlew :app:testDebugUnitTest      # 386 JVM unit tests, no device needed
+./gradlew :app:testDebugUnitTest      # 398 JVM unit tests, no device needed
 ./gradlew :app:assembleRelease        # app/build/outputs/apk/release/app-release.apk
 ./gradlew :app:installRelease         # sideload to a connected device
 ```

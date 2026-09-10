@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
 import com.anchor.domain.EveningDecision
 import com.anchor.domain.LimitDecision
+import com.anchor.data.settings.SettingsRepository
 import com.anchor.domain.LimitGate
 import com.anchor.domain.PauseLedger
 import com.anchor.ui.components.Eyebrow
@@ -85,6 +86,7 @@ object PauseCoalescing {
 class PauseActivity : ComponentActivity() {
 
     @Inject lateinit var limitGate: LimitGate
+    @Inject lateinit var settingsRepository: SettingsRepository
 
     private var completed = false
     private lateinit var blockedPackage: String
@@ -94,6 +96,8 @@ class PauseActivity : ComponentActivity() {
         val totalSeconds = intent.getIntExtra(EXTRA_SECONDS, SimpleDelayTimer.DEFAULT_SECONDS)
         blockedPackage = intent.getStringExtra(EXTRA_BLOCKED_PACKAGE).orEmpty()
         PauseLedger.begin(blockedPackage)
+        // Durably, so a process restart does not forget the debt.
+        lifecycleScope.launch { settingsRepository.owePause(blockedPackage) }
         val appLabel = blockedPackage.takeIf { it.isNotEmpty() }?.let { labelFor(it) }
 
         setContent {
@@ -181,6 +185,7 @@ class PauseActivity : ComponentActivity() {
     private fun continueToApp() {
         completed = true
         PauseLedger.complete(blockedPackage, System.currentTimeMillis())
+        lifecycleScope.launch { settingsRepository.settlePause(blockedPackage) }
         finish()
     }
 

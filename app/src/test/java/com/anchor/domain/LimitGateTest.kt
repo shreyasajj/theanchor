@@ -237,12 +237,69 @@ class LimitGateTest {
     }
 
     @Test
-    fun `once the pause is served, returning is a rejoin again`() = runTest {
-        db.appLimitDao().upsert(AppLimit(app, sessionMinutes = 10, preOpenDelaySeconds = 30))
+    fun `once the pause is served, the return no longer costs an open`() = runTest {
+        // dailyOpens is already spent, so only a rejoin can let this through.
+        db.appLimitDao().upsert(AppLimit(app, sessionMinutes = 10, dailyOpens = 1))
         PauseLedger.begin(app)
         PauseLedger.complete(app, clock.millis())
 
-        assertThat(gate(events = listOf(fg(655), bg(658))).decide(app)).isEqualTo(LimitDecision.Allow)
+        val events = listOf(fg(100), bg(110), fg(655), bg(658))
+        assertThat(gate(events = events).decide(app)).isEqualTo(LimitDecision.Allow)
+    }
+
+    // --- What counts as an open worth rejoining ---
+
+    @Test
+    fun `a launch blip is not an established open`() = runTest {
+        // Launching an app emits foreground then background a fraction of a
+        // second later. Treating that as "left and returned" waved the pause
+        // through on the very first open of any app with a session cap.
+        db.appLimitDao().upsert(AppLimit(app, sessionMinutes = 10, preOpenDelaySeconds = 30))
+        val justNow = dayStartMillis + 660 * minute
+        val events = listOf(
+            UsageEvent(app, UsageEvent.Type.FOREGROUND, justNow - 800),
+            UsageEvent(app, UsageEvent.Type.BACKGROUND, justNow - 600),
+        )
+
+        val decision = gate(events = events).decide(app)
+
+        assertThat(decision).isEqualTo(LimitDecision.Pause(30))
+    }
+
+    @Test
+    fun `an open must be running a while before a return rejoins it`() = runTest {
+        db.appLimitDao().upsert(AppLimit(app, sessionMinutes = 10, dailyOpens = 1))
+        val justNow = dayStartMillis + 660 * minute
+        // Ten seconds old: under the floor, so this is a fresh open and the
+        // spent open budget applies.
+        val young = listOf(
+            fg(100), bg(110),
+            UsageEvent(app, UsageEvent.Type.FOREGROUND, justNow - 10_000),
+            UsageEvent(app, UsageEvent.Type.BACKGROUND, justNow - 500),
+        )
+        assertThat(gate(events = young).decide(app)).isInstanceOf(LimitDecision.Blocked::class.java)
+
+        // A minute old: a real session, so returning to it is a rejoin and the
+        // second open is not charged again.
+        val established = listOf(
+            fg(100), bg(110),
+            UsageEvent(app, UsageEvent.Type.FOREGROUND, justNow - 60_000),
+            UsageEvent(app, UsageEvent.Type.BACKGROUND, justNow - 500),
+        )
+        assertThat(gate(events = established).decide(app)).isEqualTo(LimitDecision.Allow)
+    }
+
+    @Test
+    fun `a pause owed from a previous process still blocks the rejoin`() = runTest {
+        // The debt is persisted precisely because the process restarts and an
+        // in-memory flag would be forgotten.
+        db.appLimitDao().upsert(AppLimit(app, sessionMinutes = 10, dailyOpens = 1))
+        val settings = AnchorSettings(pausesOwed = setOf(app))
+        val events = listOf(fg(100), bg(110), fg(655), bg(658))
+
+        val decision = gate(events = events, settings = settings).decide(app)
+
+        assertThat(decision).isInstanceOf(LimitDecision.Blocked::class.java)
     }
 
     @Test
@@ -261,8 +318,17 @@ class LimitGateTest {
     }
 
     @Test
-    fun `returning inside the session window skips the pre-open pause`() = runTest {
+    fun `a rejoin still shows the pause, because returning is entering`() = runTest {
+        // The rejoin exists so a quick step out does not cost a second open.
+        // It was never meant to waive the wait before going back in.
         db.appLimitDao().upsert(AppLimit(app, sessionMinutes = 10, preOpenDelaySeconds = 30))
+        assertThat(gate(events = listOf(fg(655), bg(658))).decide(app))
+            .isEqualTo(LimitDecision.Pause(30))
+    }
+
+    @Test
+    fun `a rejoin with no pause configured just opens`() = runTest {
+        db.appLimitDao().upsert(AppLimit(app, sessionMinutes = 10))
         assertThat(gate(events = listOf(fg(655), bg(658))).decide(app)).isEqualTo(LimitDecision.Allow)
     }
 
