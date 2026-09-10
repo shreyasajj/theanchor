@@ -106,10 +106,11 @@ skipped; with it off, confirm the evening pause still appears.
    minute, come back within two more. Verify no pause and no block: it is the
    same open, and the dashboard still shows 1 open.
 2. Stay past five minutes from the *first* open. Verify "That's the session".
-3. Enable the accessibility button for The Anchor (Settings → Accessibility →
-   The Anchor → shortcut). Open the app again, tap the button. Verify a
-   "Locked early" toast, the phone goes home, and the dashboard shows 1.5
-   opens after you reopen.
+3. Open the limited app. Verify the accessibility button (nav-bar person
+   icon or floating button) appears only now, not on the home screen or in
+   unlimited apps. Tap it: a "Lock <app> now?" sheet appears. "Not yet"
+   dismisses it. "Lock it" sends the phone home with a toast, and the
+   dashboard shows 1.5 opens after you reopen.
 4. With a cooldown set, verify the early lock starts it immediately.
 
 ## 7c. Asking without Home Assistant

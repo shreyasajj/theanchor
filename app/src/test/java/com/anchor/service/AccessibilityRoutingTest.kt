@@ -1,5 +1,6 @@
 package com.anchor.service
 
+import com.anchor.data.usage.AppLimit
 import com.anchor.domain.EveningDecision
 import com.anchor.domain.LimitDecision
 import com.anchor.domain.LimitReason
@@ -74,6 +75,16 @@ class AccessibilityRoutingTest {
         val grace = PauseGrace()
         grace.noteShown("com.youtube", seconds = 30, nowMillis = 1_000)
         assertThat(grace.suppresses("com.instagram", nowMillis = 2_000)).isFalse()
+    }
+
+    // --- RelockButton ---
+
+    @Test
+    fun `the relock button shows only for an app with an active limit`() {
+        assertThat(RelockButton.shouldShowFor(null)).isFalse()
+        assertThat(RelockButton.shouldShowFor(AppLimit("com.x"))).isFalse()
+        assertThat(RelockButton.shouldShowFor(AppLimit("com.x", enabled = false, dailyMinutes = 10))).isFalse()
+        assertThat(RelockButton.shouldShowFor(AppLimit("com.x", sessionMinutes = 10))).isTrue()
     }
 
     // --- MorningRecheck ---

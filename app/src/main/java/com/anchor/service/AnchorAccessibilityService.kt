@@ -2,12 +2,11 @@ package com.anchor.service
 
 import android.accessibilityservice.AccessibilityButtonController
 import android.accessibilityservice.AccessibilityService
-import android.os.Handler
-import android.os.Looper
-import android.widget.Toast
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.Intent
 import android.view.accessibility.AccessibilityEvent
 import com.anchor.data.settings.SettingsRepository
+import com.anchor.data.usage.AppLimit
 import com.anchor.data.usage.AppLimitDao
 import com.anchor.domain.AnchorDate
 import com.anchor.domain.EveningDecision
@@ -22,6 +21,7 @@ import com.anchor.domain.MorningDecision
 import com.anchor.domain.MorningGate
 import com.anchor.domain.SessionCapWatcher
 import com.anchor.domain.SkipReason
+import com.anchor.ui.lock.ConfirmLockActivity
 import com.anchor.ui.lock.EveningLockActivity
 import com.anchor.ui.lock.LimitBlockedActivity
 import com.anchor.ui.lock.PauseActivity
@@ -79,6 +79,11 @@ class PauseGrace(private val extraMillis: Long = 60_000) {
 
     fun suppresses(packageName: String, nowMillis: Long): Boolean =
         packageName == this.packageName && nowMillis < untilMillis
+}
+
+/** Whether the relock button belongs on screen for the app in front. */
+object RelockButton {
+    fun shouldShowFor(limit: AppLimit?): Boolean = limit != null && limit.enabled && limit.hasAnyLimit
 }
 
 /**
@@ -139,35 +144,33 @@ class AnchorAccessibilityService : AccessibilityService() {
 
     /**
      * The accessibility button (the small person icon in the navigation bar,
-     * or the floating shortcut) locks the current app early. Ends its session,
-     * sends the user home, and makes the next open cost half.
+     * or the floating shortcut) is only requested while a limited app is in
+     * front. Tapping it opens a confirmation sheet; confirming locks the app
+     * early, which ends its session and makes the next open cost half.
      */
     private val buttonCallback = object : AccessibilityButtonController.AccessibilityButtonCallback() {
         override fun onClicked(controller: AccessibilityButtonController) {
-            scope.launch { lockCurrentAppEarly() }
+            val target = lastForegroundPackage ?: return
+            startActivity(ConfirmLockActivity.intent(this@AnchorAccessibilityService, target))
         }
     }
+
+    @Volatile private var buttonRequested = false
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         runCatching { accessibilityButtonController.registerAccessibilityButtonCallback(buttonCallback) }
+        setRelockButtonVisible(false)
     }
 
-    private suspend fun lockCurrentAppEarly() {
-        val target = lastForegroundPackage ?: return
-        if (!limitGate.lockEarly(target)) {
-            toast("No limits set for this app")
-            return
-        }
-        sessionCapWatcher.cancel()
-        performGlobalAction(GLOBAL_ACTION_HOME)
-        toast("Locked early. Coming back costs half an open.")
-    }
-
-    private fun toast(text: String) {
-        Handler(Looper.getMainLooper()).post {
-            Toast.makeText(this, text, Toast.LENGTH_SHORT).show()
-        }
+    /** Toggles the request flag so the system shows the button only when it is useful. */
+    private fun setRelockButtonVisible(visible: Boolean) {
+        if (buttonRequested == visible) return
+        val info = serviceInfo ?: return
+        val flag = AccessibilityServiceInfo.FLAG_REQUEST_ACCESSIBILITY_BUTTON
+        info.flags = if (visible) info.flags or flag else info.flags and flag.inv()
+        runCatching { serviceInfo = info }
+        buttonRequested = visible
     }
 
     private val sessionCapWatcher by lazy {
@@ -210,10 +213,14 @@ class AnchorAccessibilityService : AccessibilityService() {
                 is ForegroundAction.Ignore -> {
                     // Leaving a capped app for the dialer must stop its timer.
                     sessionCapWatcher.cancel()
+                    // Our own screens count as Ignore, so the confirmation
+                    // sheet keeps the button while it is up.
+                    if (packageName != EveningGate.OWN_PACKAGE) setRelockButtonVisible(false)
                 }
 
                 is ForegroundAction.ReassertMorningLock -> {
                     sessionCapWatcher.cancel()
+                    setRelockButtonVisible(false)
                     // Bypasses the debounce: escaping the lock must always
                     // bring it straight back, however fast the user taps.
                     enforcer.reassert()
@@ -222,6 +229,7 @@ class AnchorAccessibilityService : AccessibilityService() {
                 is ForegroundAction.EvaluateEvening -> {
                     val target = action.packageName
                     lastForegroundPackage = target
+                    setRelockButtonVisible(RelockButton.shouldShowFor(appLimitDao.find(target)))
 
                     // The session cap watches every foreground change, even
                     // debounced ones, so its timer tracks reality.

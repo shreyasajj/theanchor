@@ -8,4 +8,14 @@
         <item name="android:navigationBarColor">@color/anchor_black</item>
         <item name="android:windowLightStatusBar">false</item>
     </style>
+
+    <!-- For the small confirmation sheet shown over another app. -->
+    <style name="Theme.Anchor.Translucent" parent="Theme.Anchor">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
 </resources>

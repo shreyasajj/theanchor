@@ -80,6 +80,14 @@
             android:launchMode="singleInstance"
             android:taskAffinity=".lock" />
 
+        <activity
+            android:name=".ui.lock.ConfirmLockActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleInstance"
+            android:taskAffinity=".lock"
+            android:theme="@style/Theme.Anchor.Translucent" />
+
         <service
             android:name=".service.AnchorAccessibilityService"
             android:exported="false"
