@@ -44,6 +44,12 @@ data class AnchorSettings(
      */
     val enforceWithoutHomeAssistant: Boolean = false,
 
+    /**
+     * Show the floating lock button while an app with a limit is open, for
+     * ending its session early.
+     */
+    val showRelockBubble: Boolean = true,
+
     // --- Remote kill switch ---
     val killSwitchEnabled: Boolean = false,
     val killSwitchEntityId: String = "",

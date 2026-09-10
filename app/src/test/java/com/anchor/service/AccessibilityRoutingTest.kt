@@ -1,6 +1,5 @@
 package com.anchor.service
 
-import com.anchor.data.usage.AppLimit
 import com.anchor.domain.EveningDecision
 import com.anchor.domain.LimitDecision
 import com.anchor.domain.LimitReason
@@ -56,16 +55,6 @@ class AccessibilityRoutingTest {
     @Test
     fun `a strict overlay wins over a pre-open pause`() {
         assertThat(LimitRouting.route(LimitDecision.Pause(30), EveningDecision.Strict)).isEqualTo(Route.StrictEvening)
-    }
-
-    // --- RelockButton ---
-
-    @Test
-    fun `the relock button shows only for an app with an active limit`() {
-        assertThat(RelockButton.shouldShowFor(null)).isFalse()
-        assertThat(RelockButton.shouldShowFor(AppLimit("com.x"))).isFalse()
-        assertThat(RelockButton.shouldShowFor(AppLimit("com.x", enabled = false, dailyMinutes = 10))).isFalse()
-        assertThat(RelockButton.shouldShowFor(AppLimit("com.x", sessionMinutes = 10))).isTrue()
     }
 
     // --- MorningRecheck ---

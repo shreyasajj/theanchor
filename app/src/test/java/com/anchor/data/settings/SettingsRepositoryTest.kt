@@ -60,6 +60,7 @@ class SettingsRepositoryTest {
         assertThat(s.killSwitchFailOpenOnOutage).isFalse()
         assertThat(s.noteFormat).isEqualTo(NoteFormat.PLAIN)
         assertThat(s.enforceWithoutHomeAssistant).isFalse()
+        assertThat(s.showRelockBubble).isTrue()
     }
 
     @Test
@@ -100,10 +101,12 @@ class SettingsRepositoryTest {
                 killSwitchFailOpenOnOutage = true,
                 noteFormat = NoteFormat.OBSIDIAN,
                 enforceWithoutHomeAssistant = true,
+                showRelockBubble = false,
             )
         }
         val s = repo.current()
         assertThat(s.enforceWithoutHomeAssistant).isTrue()
+        assertThat(s.showRelockBubble).isFalse()
         assertThat(s.dayResetMinute).isEqualTo(210)
         assertThat(s.killSwitchFailOpenOnOutage).isTrue()
         assertThat(s.noteFormat).isEqualTo(NoteFormat.OBSIDIAN)

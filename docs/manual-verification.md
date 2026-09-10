@@ -106,12 +106,23 @@ skipped; with it off, confirm the evening pause still appears.
    minute, come back within two more. Verify no pause and no block: it is the
    same open, and the dashboard still shows 1 open.
 2. Stay past five minutes from the *first* open. Verify "That's the session".
-3. Open the limited app. Verify the accessibility button (nav-bar person
-   icon or floating button) appears only now, not on the home screen or in
-   unlimited apps. Tap it: a "Lock <app> now?" sheet appears. "Not yet"
-   dismisses it. "Lock it" sends the phone home with a toast, and the
+3. Open the limited app. Verify the floating lock button appears **only**
+   now: not on the home screen, not in unlimited apps, and not in the
+   Anchor's own screens. Leave it alone for five seconds and verify it fades
+   to nearly transparent; touch it and verify it brightens. Drag it and
+   verify it stays where you put it, including after leaving and returning.
+4. Tap it. Verify a "Lock <app> now?" sheet appears. "Not yet" dismisses it
+   and the button comes back. "Lock it" sends the phone home, and the
    dashboard shows 1.5 opens after you reopen.
-4. With a cooldown set, verify the early lock starts it immediately.
+5. Tap it again on a later open. Verify it prompts **every** time, not just
+   the first.
+6. Start a video in the limited app. Verify the button is still reachable but
+   faded, and that turning off "Floating lock button" in Settings removes it
+   entirely.
+7. If you previously enabled the system accessibility shortcut for The
+   Anchor, turn it off under Android Settings → Accessibility → The Anchor →
+   shortcut. The app no longer uses it.
+8. With a cooldown set, verify the early lock starts it immediately.
 
 ## 7d. The pause cannot be walked around
 

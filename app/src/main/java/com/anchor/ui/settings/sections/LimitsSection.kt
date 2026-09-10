@@ -14,6 +14,7 @@ import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -27,6 +28,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.anchor.data.usage.AppLimit
 import com.anchor.ui.components.Hint
+import com.anchor.ui.components.SettingRow
 import com.anchor.ui.components.SoftDivider
 import com.anchor.ui.components.anchorTextFieldColors
 import com.anchor.ui.settings.InstalledApp
@@ -49,6 +51,8 @@ object LimitSummary {
 fun LimitsSection(
     apps: List<InstalledApp>,
     limits: List<AppLimit>,
+    showRelockBubble: Boolean,
+    onSetRelockBubble: (Boolean) -> Unit,
     onSetLimit: (String, (AppLimit) -> AppLimit) -> Unit,
     onClearLimit: (String) -> Unit,
 ) {
@@ -99,6 +103,15 @@ fun LimitsSection(
 
         TextButton(onClick = { pickerOpen = true }, modifier = Modifier.padding(top = 4.dp)) {
             Text("Add an app")
+        }
+
+        SoftDivider(Modifier.padding(top = 8.dp))
+        SettingRow(
+            "Floating lock button",
+            supporting = "A small button inside limited apps for ending the session early. " +
+                "It fades out of the way when you leave it alone, and can be dragged anywhere.",
+        ) {
+            Switch(checked = showRelockBubble, onCheckedChange = onSetRelockBubble)
         }
     }
 

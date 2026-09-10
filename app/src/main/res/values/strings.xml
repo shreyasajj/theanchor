@@ -2,4 +2,5 @@
 <resources>
     <string name="app_name">The Anchor</string>
     <string name="accessibility_service_description">The Anchor uses this service to notice which app is in the foreground so it can enforce your morning check-in, evening app blocks and usage limits. It reads only the package name of the foreground app; it does not read screen content, and nothing leaves your device except the Home Assistant and Joplin calls you configure.</string>
+    <string name="relock_bubble_description">Lock this app early</string>
 </resources>

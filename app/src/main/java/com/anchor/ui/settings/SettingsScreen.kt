@@ -93,6 +93,8 @@ fun SettingsScreen(
             item { LimitsSection(
                 apps = apps,
                 limits = limits,
+                showRelockBubble = settings.showRelockBubble,
+                onSetRelockBubble = { on -> viewModel.updateSettings { it.copy(showRelockBubble = on) } },
                 onSetLimit = viewModel::setLimit,
                 onClearLimit = viewModel::clearLimit,
             ) }

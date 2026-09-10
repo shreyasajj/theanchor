@@ -78,11 +78,18 @@ Leaving the pause screen without finishing it does **not** let you in. Returning
 the app starts the countdown again from the top. Only a pause you actually sat
 through, or a sit you completed, opens the door.
 
-**Locking early.** While a limited app is in front, Android's accessibility button
-appears (the person icon in the navigation bar, or the floating button on gesture
-navigation). It is hidden everywhere else. Tapping it asks "Lock this app now?";
-confirming ends the session, starts any cooldown immediately, and makes the next
-open cost half an open instead of one. The dashboard shows fractional opens.
+**Locking early.** While a limited app is in front, a small floating lock button
+appears. It fades to nearly transparent if you leave it alone, so it does not sit
+over a film, brightens when touched, and can be dragged anywhere. It goes away the
+moment you leave the app, and can be switched off entirely in Settings.
+
+Tapping it asks "Lock this app now?"; confirming ends the session, starts any
+cooldown immediately, and makes the next open cost half an open instead of one. The
+dashboard shows fractional opens.
+
+This is the app's own overlay rather than Android's accessibility shortcut. The
+system shortcut is assigned by the user and its button is drawn by the system, so a
+service cannot reliably show it for one app and hide it for another.
 
 ### Breathing
 
@@ -184,7 +191,7 @@ the default.
 Requires JDK 17 and an Android SDK with platform 35. `minSdk` is 33.
 
 ```bash
-./gradlew :app:testDebugUnitTest      # 379 JVM unit tests, no device needed
+./gradlew :app:testDebugUnitTest      # 386 JVM unit tests, no device needed
 ./gradlew :app:assembleRelease        # app/build/outputs/apk/release/app-release.apk
 ./gradlew :app:installRelease         # sideload to a connected device
 ```
@@ -208,9 +215,6 @@ Open the app and work through the **Setup** card on the dashboard:
 | Usage access | Powers the per-app time and open-count limits. |
 | Notifications | For the quiet status notification that keeps the service alive. |
 | Export folder | Where the daily Markdown files are written. |
-
-To use the early-lock button, also enable the accessibility shortcut once under
-Android Settings → Accessibility → The Anchor → shortcut.
 
 Then open Settings and configure the schedule, blocked apps, limits, questions, Home
 Assistant and export. `docs/manual-verification.md` is the on-device checklist.

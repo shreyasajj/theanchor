@@ -1,8 +1,6 @@
 package com.anchor.service
 
-import android.accessibilityservice.AccessibilityButtonController
 import android.accessibilityservice.AccessibilityService
-import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.Intent
 import android.view.accessibility.AccessibilityEvent
 import com.anchor.data.settings.SettingsRepository
@@ -66,7 +64,8 @@ object LimitRouting {
  */
 /** Whether the relock button belongs on screen for the app in front. */
 object RelockButton {
-    fun shouldShowFor(limit: AppLimit?): Boolean = limit != null && limit.enabled && limit.hasAnyLimit
+    fun shouldShowFor(limit: AppLimit?, enabledInSettings: Boolean = true): Boolean =
+        enabledInSettings && limit != null && limit.enabled && limit.hasAnyLimit
 }
 
 /**
@@ -125,34 +124,20 @@ class AnchorAccessibilityService : AccessibilityService() {
     @Volatile private var lastForegroundPackage: String? = null
 
     /**
-     * The accessibility button (the small person icon in the navigation bar,
-     * or the floating shortcut) is only requested while a limited app is in
-     * front. Tapping it opens a confirmation sheet; confirming locks the app
-     * early, which ends its session and makes the next open cost half.
+     * Our own floating lock button, rather than Android's accessibility
+     * shortcut. The system shortcut is assigned by the user and its button is
+     * shown by the system, so a service has no dependable way to hide it for
+     * one app and show it for another; toggling
+     * FLAG_REQUEST_ACCESSIBILITY_BUTTON at runtime did not hide it in
+     * practice. An overlay we own appears exactly where it is useful.
+     *
+     * Tapping it opens a confirmation sheet; confirming ends the app's session
+     * early, which starts any cooldown and makes the next open cost half.
      */
-    private val buttonCallback = object : AccessibilityButtonController.AccessibilityButtonCallback() {
-        override fun onClicked(controller: AccessibilityButtonController) {
-            val target = lastForegroundPackage ?: return
-            startActivity(ConfirmLockActivity.intent(this@AnchorAccessibilityService, target))
+    private val relockBubble by lazy {
+        RelockBubble(this) { target ->
+            startActivity(ConfirmLockActivity.intent(this, target))
         }
-    }
-
-    @Volatile private var buttonRequested = false
-
-    override fun onServiceConnected() {
-        super.onServiceConnected()
-        runCatching { accessibilityButtonController.registerAccessibilityButtonCallback(buttonCallback) }
-        setRelockButtonVisible(false)
-    }
-
-    /** Toggles the request flag so the system shows the button only when it is useful. */
-    private fun setRelockButtonVisible(visible: Boolean) {
-        if (buttonRequested == visible) return
-        val info = serviceInfo ?: return
-        val flag = AccessibilityServiceInfo.FLAG_REQUEST_ACCESSIBILITY_BUTTON
-        info.flags = if (visible) info.flags or flag else info.flags and flag.inv()
-        runCatching { serviceInfo = info }
-        buttonRequested = visible
     }
 
     private val sessionCapWatcher by lazy {
@@ -195,14 +180,14 @@ class AnchorAccessibilityService : AccessibilityService() {
                 is ForegroundAction.Ignore -> {
                     // Leaving a capped app for the dialer must stop its timer.
                     sessionCapWatcher.cancel()
-                    // Our own screens count as Ignore, so the confirmation
-                    // sheet keeps the button while it is up.
-                    if (packageName != EveningGate.OWN_PACKAGE) setRelockButtonVisible(false)
+                    // Includes our own screens: the confirmation sheet has its
+                    // own buttons, and returning to the app shows this again.
+                    relockBubble.hide()
                 }
 
                 is ForegroundAction.ReassertMorningLock -> {
                     sessionCapWatcher.cancel()
-                    setRelockButtonVisible(false)
+                    relockBubble.hide()
                     // Bypasses the debounce: escaping the lock must always
                     // bring it straight back, however fast the user taps.
                     enforcer.reassert()
@@ -211,7 +196,11 @@ class AnchorAccessibilityService : AccessibilityService() {
                 is ForegroundAction.EvaluateEvening -> {
                     val target = action.packageName
                     lastForegroundPackage = target
-                    setRelockButtonVisible(RelockButton.shouldShowFor(appLimitDao.find(target)))
+                    if (RelockButton.shouldShowFor(appLimitDao.find(target), settings.showRelockBubble)) {
+                        relockBubble.show(target)
+                    } else {
+                        relockBubble.hide()
+                    }
 
                     // The session cap watches every foreground change, even
                     // debounced ones, so its timer tracks reality.
@@ -267,7 +256,7 @@ class AnchorAccessibilityService : AccessibilityService() {
     override fun onInterrupt() = Unit
 
     override fun onDestroy() {
-        runCatching { accessibilityButtonController.unregisterAccessibilityButtonCallback(buttonCallback) }
+        relockBubble.hide()
         sessionCapWatcher.cancel()
         scope.cancel()
         super.onDestroy()
