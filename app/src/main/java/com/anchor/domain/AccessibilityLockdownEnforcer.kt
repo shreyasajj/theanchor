@@ -2,6 +2,7 @@ package com.anchor.domain
 
 import android.content.Context
 import android.content.Intent
+import com.anchor.ui.lock.EveningSitLockActivity
 import com.anchor.ui.lock.MorningLockActivity
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
@@ -20,8 +21,8 @@ class AccessibilityLockdownEnforcer @Inject constructor(
     @ApplicationContext private val context: Context,
 ) : LockdownEnforcer {
 
-    override fun begin() {
-        LockdownState.begin()
+    override fun begin(kind: LockKind) {
+        LockdownState.begin(kind)
         reassert()
     }
 
@@ -31,8 +32,14 @@ class AccessibilityLockdownEnforcer @Inject constructor(
 
     override val isActive: Boolean get() = LockdownState.active
 
+    override val activeKind: LockKind? get() = LockdownState.kind
+
     override fun reassert() {
-        val intent = Intent(context, MorningLockActivity::class.java).apply {
+        val target = when (LockdownState.kind ?: return) {
+            LockKind.MORNING -> MorningLockActivity::class.java
+            LockKind.EVENING_SIT -> EveningSitLockActivity::class.java
+        }
+        val intent = Intent(context, target).apply {
             addFlags(
                 Intent.FLAG_ACTIVITY_NEW_TASK or
                     Intent.FLAG_ACTIVITY_CLEAR_TOP or

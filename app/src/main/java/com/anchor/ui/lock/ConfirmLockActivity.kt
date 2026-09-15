@@ -3,7 +3,6 @@ package com.anchor.ui.lock
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
@@ -40,9 +39,10 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 /**
- * A small sheet over the current app, opened by the accessibility button:
- * "Lock this app early?" Confirming records an early lock, which ends the
- * session and makes the next open cost half, then sends the user home.
+ * A small sheet over the current app, opened by the floating button:
+ * "Lock this app now?" Confirming records an early lock, which ends the
+ * session, and then shows exactly what the session running out shows: the
+ * pause, from which Continue is a new open, or the blocked screen.
  */
 @AndroidEntryPoint
 class ConfirmLockActivity : ComponentActivity() {
@@ -84,8 +84,8 @@ class ConfirmLockActivity : ComponentActivity() {
                         Text("Lock $label now?", style = MaterialTheme.typography.headlineMedium)
                         Spacer(Modifier.height(8.dp))
                         Text(
-                            "This ends the session. Coming back later counts as half an open, " +
-                                "and any cooldown starts now.",
+                            "This ends the session now. You will be asked before going back in, " +
+                                "and going back in is a new open. Any cooldown starts now.",
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -98,18 +98,14 @@ class ConfirmLockActivity : ComponentActivity() {
                                     busy = true
                                     lifecycleScope.launch {
                                         val locked = limitGate.lockEarly(packageName)
-                                        if (locked) {
-                                            startActivity(
-                                                Intent(Intent.ACTION_MAIN)
-                                                    .addCategory(Intent.CATEGORY_HOME)
-                                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                            )
-                                            Toast.makeText(
-                                                this@ConfirmLockActivity,
-                                                "$label locked. Coming back costs half an open.",
-                                                Toast.LENGTH_SHORT,
-                                            ).show()
-                                        }
+                                        val next = if (locked) {
+                                            SessionEndScreens.intentFor(this@ConfirmLockActivity, limitGate, packageName)
+                                        } else null
+                                        startActivity(
+                                            next ?: Intent(Intent.ACTION_MAIN)
+                                                .addCategory(Intent.CATEGORY_HOME)
+                                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                        )
                                         finish()
                                     }
                                 },

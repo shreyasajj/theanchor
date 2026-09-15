@@ -190,16 +190,96 @@ class UsageCalculatorTest {
     }
 
     @Test
-    fun `the session window is measured from the open's start, not the last session`() {
+    fun `the session is measured from the open's start, not the last session`() {
         // Sessions at 10-13 and 18-19 share an open; a return at 21 is past
         // 10+10 even though it is only 2 minutes after the last close.
         val s = UsageCalculator.summarize(
             events = listOf(fg(10), bg(13), fg(18), bg(19), fg(21)),
-            packageName = app, windowStartMillis = windowStart, nowMillis = 60 * minute,
+            packageName = app, windowStartMillis = windowStart, nowMillis = 25 * minute,
             sessionWindowMillis = 10 * minute,
         )
 
         assertThat(s.opens).isEqualTo(2)
+        assertThat(s.lastOpenStartAtMillis).isEqualTo(21 * minute)
+        assertThat(s.currentOpenForegroundMillis).isEqualTo(4 * minute)
+    }
+
+    @Test
+    fun `an open whose session has elapsed is not rejoined, even inside the hand-off`() {
+        // Session from 10 elapsed at 20; a return at 20:30 is a new open even
+        // though it is inside the one-minute hand-off.
+        val s = UsageCalculator.summarize(
+            events = listOf(fg(10), bg(20), UsageEvent(app, UsageEvent.Type.FOREGROUND, 20 * minute + 30_000)),
+            packageName = app, windowStartMillis = windowStart, nowMillis = 25 * minute,
+            sessionWindowMillis = 10 * minute,
+        )
+
+        assertThat(s.opens).isEqualTo(2)
+        assertThat(s.lastOpenUnits).isEqualTo(1.0)
+    }
+
+    @Test
+    fun `time away inside the session is not foreground time`() {
+        val s = UsageCalculator.summarize(
+            events = listOf(fg(10), bg(12), fg(17), bg(18)),
+            packageName = app, windowStartMillis = windowStart, nowMillis = 25 * minute,
+            sessionWindowMillis = 10 * minute,
+        )
+        assertThat(s.opens).isEqualTo(1)
+        assertThat(s.foregroundMillis).isEqualTo(3 * minute)
+    }
+
+    @Test
+    fun `lastOpenEndAt is null while the open is running and set once it is left`() {
+        val running = summarize(listOf(fg(10)), nowMinutes = 20)
+        assertThat(running.lastOpenEndAtMillis).isNull()
+
+        val left = summarize(listOf(fg(10), bg(15)), nowMinutes = 20)
+        assertThat(left.lastOpenEndAtMillis).isEqualTo(15 * minute)
+    }
+
+    // --- Groups ---
+
+    private val instagram = "com.instagram.android"
+
+    @Test
+    fun `a group's apps are summed as one`() {
+        val s = UsageCalculator.summarize(
+            events = listOf(fg(10), bg(20), fg(40, instagram), bg(45, instagram)),
+            packageNames = setOf(app, instagram), windowStartMillis = windowStart, nowMillis = 60 * minute,
+        )
+
+        assertThat(s.foregroundMillis).isEqualTo(15 * minute)
+        assertThat(s.opens).isEqualTo(2)
+    }
+
+    @Test
+    fun `switching between apps in a group inside the session is one open`() {
+        val s = UsageCalculator.summarize(
+            events = listOf(fg(10), bg(13), fg(13, instagram), bg(16, instagram)),
+            packageNames = setOf(app, instagram), windowStartMillis = windowStart, nowMillis = 60 * minute,
+            sessionWindowMillis = 10 * minute,
+        )
+
+        assertThat(s.opens).isEqualTo(1)
+        assertThat(s.currentOpenForegroundMillis).isEqualTo(6 * minute)
+    }
+
+    @Test
+    fun `a hand-over logged out of order does not double count`() {
+        // Instagram's FOREGROUND lands a second before YouTube's BACKGROUND.
+        val s = UsageCalculator.summarize(
+            events = listOf(
+                fg(10),
+                UsageEvent(instagram, UsageEvent.Type.FOREGROUND, 13 * minute - 1_000),
+                bg(13),
+                bg(16, instagram),
+            ),
+            packageNames = setOf(app, instagram), windowStartMillis = windowStart, nowMillis = 60 * minute,
+        )
+
+        assertThat(s.foregroundMillis).isEqualTo(6 * minute)
+        assertThat(s.opens).isEqualTo(1)
     }
 
     @Test
@@ -211,7 +291,7 @@ class UsageCalculatorTest {
     // --- Early locks ---
 
     @Test
-    fun `an early lock ends the open, and the return costs half`() {
+    fun `an early lock ends the open, and the return is a new one in full`() {
         val s = UsageCalculator.summarize(
             events = listOf(fg(10), bg(13), fg(18), bg(20)),
             packageName = app, windowStartMillis = windowStart, nowMillis = 60 * minute,
@@ -220,7 +300,7 @@ class UsageCalculatorTest {
         )
 
         assertThat(s.opens).isEqualTo(2)
-        assertThat(s.openUnits).isEqualTo(1.5)
+        assertThat(s.openUnits).isEqualTo(2.0)
         assertThat(s.lastOpenStartAtMillis).isEqualTo(18 * minute)
     }
 
@@ -237,18 +317,18 @@ class UsageCalculatorTest {
         )
 
         assertThat(s.opens).isEqualTo(2)
-        assertThat(s.openUnits).isEqualTo(1.5)
+        assertThat(s.openUnits).isEqualTo(2.0)
     }
 
     @Test
-    fun `a full open after a half open is charged in full`() {
+    fun `every open after an early lock is charged in full`() {
         val s = UsageCalculator.summarize(
             events = listOf(fg(10), bg(13), fg(18), bg(20), fg(40), bg(45)),
             packageName = app, windowStartMillis = windowStart, nowMillis = 60 * minute,
             earlyLocksMillis = listOf(13 * minute),
         )
 
-        assertThat(s.openUnits).isEqualTo(2.5)
+        assertThat(s.openUnits).isEqualTo(3.0)
     }
 
     @Test

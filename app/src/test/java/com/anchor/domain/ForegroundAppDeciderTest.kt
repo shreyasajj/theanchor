@@ -12,20 +12,20 @@ class ForegroundAppDeciderTest {
     )
 
     private fun decide(pkg: String, locked: Boolean) =
-        ForegroundAppDecider.decide(pkg, morningLockActive = locked, settings = settings)
+        ForegroundAppDecider.decide(pkg, lockActive = locked, settings = settings)
 
     // --- Morning lockdown active ---
 
     @Test
     fun `reasserts the lock when an ordinary app comes to the foreground`() {
         assertThat(decide("com.google.android.youtube", locked = true))
-            .isEqualTo(ForegroundAction.ReassertMorningLock)
+            .isEqualTo(ForegroundAction.ReassertLock)
     }
 
     @Test
     fun `reasserts the lock for the launcher`() {
         assertThat(decide("com.google.android.apps.nexuslauncher", locked = true))
-            .isEqualTo(ForegroundAction.ReassertMorningLock)
+            .isEqualTo(ForegroundAction.ReassertLock)
     }
 
     @Test

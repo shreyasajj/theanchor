@@ -13,19 +13,9 @@ object UsageCalculator {
      */
     const val OPEN_COALESCE_WINDOW_MILLIS = 60_000L
 
-    /** What the first open after a voluntary early lock costs. */
-    const val EARLY_LOCK_REOPEN_UNITS = 0.5
-
     private data class Session(val start: Long, val end: Long?)
 
-    /**
-     * @param sessionWindowMillis when set (the app's session cap), a return
-     *   that begins before the current open's window has elapsed rejoins that
-     *   open instead of starting a new one.
-     * @param earlyLocksMillis times the user voluntarily locked the app early.
-     *   An early lock always ends the open in progress; the next open costs
-     *   [EARLY_LOCK_REOPEN_UNITS] instead of one.
-     */
+    /** Single-app convenience. */
     fun summarize(
         events: List<UsageEvent>,
         packageName: String,
@@ -33,59 +23,123 @@ object UsageCalculator {
         nowMillis: Long,
         sessionWindowMillis: Long? = null,
         earlyLocksMillis: List<Long> = emptyList(),
+    ): AppUsageSummary = summarize(
+        events, setOf(packageName), windowStartMillis, nowMillis, sessionWindowMillis, earlyLocksMillis,
+    )
+
+    /**
+     * Whether a return [openAgeMillis] after the open began continues it. A
+     * session is wall clock from the open: the app is joinable, unasked, for
+     * that long, and afterwards the next entry is a new open, even a second
+     * later. Only the daily minute budget counts foreground time.
+     */
+    fun rejoins(openAgeMillis: Long, sessionWindowMillis: Long): Boolean = openAgeMillis < sessionWindowMillis
+
+    /**
+     * @param packageNames the apps sharing one limit; their sessions are
+     *   merged and counted as one.
+     * @param sessionWindowMillis when set (the limit's session length), a
+     *   return inside that long of the open's start continues it instead of
+     *   starting a new one; after it, any return is a new open.
+     * @param earlyLocksMillis times the user voluntarily locked the app early.
+     *   An early lock always ends the open in progress, so the next entry is
+     *   a new open however soon it comes.
+     */
+    fun summarize(
+        events: List<UsageEvent>,
+        packageNames: Set<String>,
+        windowStartMillis: Long,
+        nowMillis: Long,
+        sessionWindowMillis: Long? = null,
+        earlyLocksMillis: List<Long> = emptyList(),
     ): AppUsageSummary {
-        val sessions = buildSessions(events, packageName)
+        val sessions = buildSessions(events, packageNames, nowMillis)
         if (sessions.isEmpty()) return AppUsageSummary()
 
         var foregroundMillis = 0L
         var opens = 0
         var openUnits = 0.0
+        var lastOpenUnits = 0.0
         var openStart: Long? = null
+        var openForeground = 0L
         var previousEnd: Long? = null
 
         sessions.forEach { session ->
+            val sessionEnd = minOf(session.end ?: nowMillis, nowMillis)
+
             // Time: clip the session to the window.
             val effectiveStart = maxOf(session.start, windowStartMillis)
-            val effectiveEnd = minOf(session.end ?: nowMillis, nowMillis)
-            if (effectiveEnd > effectiveStart) {
-                foregroundMillis += effectiveEnd - effectiveStart
+            if (sessionEnd > effectiveStart) {
+                foregroundMillis += sessionEnd - effectiveStart
             }
 
             // Was the previous open ended on purpose before this session began?
             val lockedSince = previousEnd != null &&
                 earlyLocksMillis.any { it >= previousEnd!! && it <= session.start }
 
-            val rejoins = openStart != null && !lockedSince && (
-                (previousEnd != null && session.start - previousEnd!! < OPEN_COALESCE_WINDOW_MILLIS) ||
-                    (sessionWindowMillis != null && session.start - openStart!! < sessionWindowMillis)
+            val rejoinsOpen = openStart != null && previousEnd != null && !lockedSince && (
+                if (sessionWindowMillis != null) rejoins(session.start - openStart!!, sessionWindowMillis)
+                else session.start - previousEnd!! < OPEN_COALESCE_WINDOW_MILLIS
                 )
 
-            if (!rejoins) {
+            if (!rejoinsOpen) {
                 openStart = session.start
+                openForeground = 0L
+                lastOpenUnits = 0.0
                 // Opens: only those that actually began inside the window.
                 if (session.start >= windowStartMillis) {
                     opens++
-                    openUnits += if (lockedSince) EARLY_LOCK_REOPEN_UNITS else 1.0
+                    lastOpenUnits = 1.0
+                    openUnits += lastOpenUnits
                 }
             }
+            if (sessionEnd > session.start) openForeground += sessionEnd - session.start
             previousEnd = session.end
         }
 
+        val running = sessions.last().end == null
         return AppUsageSummary(
             foregroundMillis = foregroundMillis,
             opens = opens,
             openUnits = openUnits,
+            lastOpenUnits = lastOpenUnits,
             lastForegroundEndAtMillis = sessions.lastOrNull { it.end != null }?.end,
-            currentSessionStartAtMillis = sessions.lastOrNull()?.takeIf { it.end == null }?.start,
+            currentSessionStartAtMillis = sessions.last().takeIf { it.end == null }?.start,
             lastOpenStartAtMillis = openStart,
+            lastOpenEndAtMillis = if (running) null else sessions.last().end,
+            currentOpenForegroundMillis = openForeground,
         )
     }
 
-    private fun buildSessions(events: List<UsageEvent>, packageName: String): List<Session> {
-        val ordered = events
-            .filter { it.packageName == packageName }
-            .sortedBy { it.timestampMillis }
+    /**
+     * Sessions of every member app, merged where they touch or overlap: a
+     * group's members hand over to each other with the next one's FOREGROUND
+     * sometimes logged before the previous one's BACKGROUND.
+     */
+    private fun buildSessions(events: List<UsageEvent>, packageNames: Set<String>, nowMillis: Long): List<Session> {
+        val perPackage = events
+            .filter { it.packageName in packageNames }
+            .groupBy { it.packageName }
+            .values
+            .flatMap { buildSessionsFor(it) }
+            .sortedBy { it.start }
+        if (perPackage.size <= 1) return perPackage
 
+        val merged = mutableListOf<Session>()
+        perPackage.forEach { session ->
+            val last = merged.lastOrNull()
+            if (last != null && session.start < (last.end ?: Long.MAX_VALUE)) {
+                val end = if (last.end == null || session.end == null) null else maxOf(last.end, session.end)
+                merged[merged.lastIndex] = Session(last.start, end)
+            } else {
+                merged += session
+            }
+        }
+        return merged
+    }
+
+    private fun buildSessionsFor(events: List<UsageEvent>): List<Session> {
+        val ordered = events.sortedBy { it.timestampMillis }
         val sessions = mutableListOf<Session>()
         var openStart: Long? = null
 

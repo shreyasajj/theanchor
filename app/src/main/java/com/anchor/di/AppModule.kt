@@ -13,6 +13,7 @@ import com.anchor.data.db.AnchorDatabase
 import com.anchor.data.db.CustomQuestionDao
 import com.anchor.data.db.DailyLogDao
 import com.anchor.data.db.DefaultQuestions
+import com.anchor.data.db.Migrations
 import com.anchor.data.export.DocumentStoreFactory
 import com.anchor.data.export.JoplinApi
 import com.anchor.data.export.SafDocumentStore
@@ -24,6 +25,8 @@ import com.anchor.data.usage.AppLimitDao
 import com.anchor.data.usage.EarlyLockDao
 import com.anchor.data.usage.MeditationSessionDao
 import com.anchor.data.usage.UsageStatsSource
+import com.anchor.domain.CachedLimitLookup
+import com.anchor.domain.LimitLookup
 import com.jakewharton.retrofit2.converter.kotlinx.serialization.asConverterFactory
 import dagger.Module
 import dagger.Provides
@@ -66,8 +69,11 @@ object AppModule {
             .addCallback(object : RoomDatabase.Callback() {
                 override fun onCreate(db: SupportSQLiteDatabase) = DefaultQuestions.seed(db)
             })
-            // Personal, unreleased app: a schema bump recreates the database.
-            .fallbackToDestructiveMigration()
+            .addMigrations(*Migrations.ALL)
+            // Versions 1 and 2 predate any install that was kept; anything
+            // from 3 on migrates, so an update never loses the questions or
+            // the daily log again.
+            .fallbackToDestructiveMigrationFrom(1, 2)
             .build()
 
     @Provides fun provideDailyLogDao(db: AnchorDatabase): DailyLogDao = db.dailyLogDao()
@@ -147,4 +153,13 @@ object AppModule {
     @Provides
     @Singleton
     fun provideUsageStatsSource(impl: AndroidUsageStatsSource): UsageStatsSource = impl
+
+    /**
+     * Limits are read on every foreground change; keep them in memory rather
+     * than hitting Room from the accessibility service's hot path.
+     */
+    @Provides
+    @Singleton
+    fun provideLimitLookup(dao: AppLimitDao): LimitLookup =
+        CachedLimitLookup(dao, CoroutineScope(Dispatchers.IO + SupervisorJob()))
 }

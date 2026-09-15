@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import com.anchor.data.export.NoteFormat
+import com.anchor.domain.Streak
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -36,6 +37,12 @@ class SettingsRepository @Inject constructor(
         val ENFORCE_WITHOUT_HA = booleanPreferencesKey("enforce_without_ha")
         val RELOCK_BUBBLE = booleanPreferencesKey("relock_bubble")
         val PAUSES_OWED = stringSetPreferencesKey("pauses_owed")
+        val ENFORCEMENT_MODE = stringPreferencesKey("enforcement_mode")
+        val STREAK_START = stringPreferencesKey("streak_start_day")
+        val LIMIT_BYPASSES = stringSetPreferencesKey("limit_bypasses")
+        val EVENING_PROMPT = booleanPreferencesKey("evening_prompt_on_its_own")
+        val EVENING_SIT_REQUIRED = booleanPreferencesKey("evening_sit_required")
+        val EVENING_SIT_MINUTES = intPreferencesKey("evening_sit_minutes")
         val KILL_ENABLED = booleanPreferencesKey("kill_enabled")
         val KILL_ENTITY = stringPreferencesKey("kill_entity")
         val KILL_STATE = stringPreferencesKey("kill_state")
@@ -71,6 +78,13 @@ class SettingsRepository @Inject constructor(
             prefs[Keys.ENFORCE_WITHOUT_HA] = next.enforceWithoutHomeAssistant
             prefs[Keys.RELOCK_BUBBLE] = next.showRelockBubble
             prefs[Keys.PAUSES_OWED] = next.pausesOwed
+            prefs[Keys.ENFORCEMENT_MODE] = next.enforcementMode.name
+            prefs[Keys.LIMIT_BYPASSES] = next.limitBypasses
+            prefs[Keys.EVENING_PROMPT] = next.eveningPromptOnItsOwn
+            prefs[Keys.EVENING_SIT_REQUIRED] = next.eveningSitRequired
+            prefs[Keys.EVENING_SIT_MINUTES] = next.eveningSitMinutes
+            val streak = next.streakStartDay
+            if (streak == null) prefs.remove(Keys.STREAK_START) else prefs[Keys.STREAK_START] = streak
             prefs[Keys.KILL_ENABLED] = next.killSwitchEnabled
             prefs[Keys.KILL_ENTITY] = next.killSwitchEntityId
             prefs[Keys.KILL_STATE] = next.killSwitchOverrideState
@@ -83,16 +97,37 @@ class SettingsRepository @Inject constructor(
         }
     }
 
-    /** Record that [packageName] was shown a pause it has not yet sat through. */
-    suspend fun owePause(packageName: String) {
-        if (packageName.isBlank()) return
-        update { it.copy(pausesOwed = it.pausesOwed + packageName) }
+    /** Record that [subject] was shown a pause it has not yet sat through. */
+    suspend fun owePause(subject: String) {
+        if (subject.isBlank()) return
+        update { it.copy(pausesOwed = it.pausesOwed + subject) }
     }
 
     /** The pause was served, or no longer applies. */
-    suspend fun settlePause(packageName: String) {
-        if (packageName.isBlank()) return
-        update { it.copy(pausesOwed = it.pausesOwed - packageName) }
+    suspend fun settlePause(subject: String) {
+        if (subject.isBlank()) return
+        update { it.copy(pausesOwed = it.pausesOwed - subject) }
+    }
+
+    /** Starts the streak clock on [usageDay] if it has never been started. */
+    suspend fun ensureStreakStarted(usageDay: String) {
+        if (current().streakStartDay != null) return
+        update { if (it.streakStartDay == null) it.copy(streakStartDay = usageDay) else it }
+    }
+
+    /**
+     * The user walked through [subject]'s limit on [usageDay]. The streak
+     * restarts tomorrow and the limit is waived until the next reset. Old
+     * bypasses are dropped here so the set never grows.
+     */
+    suspend fun recordBreak(subject: String, usageDay: String) {
+        update {
+            it.copy(
+                streakStartDay = Streak.startAfterBreak(usageDay),
+                limitBypasses = it.limitBypasses.filter { key -> key.endsWith("|$usageDay") }.toSet() +
+                    Streak.bypassKey(subject, usageDay),
+            )
+        }
     }
 
     private fun Preferences.toSettings(): AnchorSettings {
@@ -115,6 +150,12 @@ class SettingsRepository @Inject constructor(
             enforceWithoutHomeAssistant = this[Keys.ENFORCE_WITHOUT_HA] ?: d.enforceWithoutHomeAssistant,
             showRelockBubble = this[Keys.RELOCK_BUBBLE] ?: d.showRelockBubble,
             pausesOwed = this[Keys.PAUSES_OWED] ?: d.pausesOwed,
+            enforcementMode = this[Keys.ENFORCEMENT_MODE]?.toEnforcementMode() ?: d.enforcementMode,
+            streakStartDay = this[Keys.STREAK_START],
+            limitBypasses = this[Keys.LIMIT_BYPASSES] ?: d.limitBypasses,
+            eveningPromptOnItsOwn = this[Keys.EVENING_PROMPT] ?: d.eveningPromptOnItsOwn,
+            eveningSitRequired = this[Keys.EVENING_SIT_REQUIRED] ?: d.eveningSitRequired,
+            eveningSitMinutes = this[Keys.EVENING_SIT_MINUTES] ?: d.eveningSitMinutes,
             killSwitchEnabled = this[Keys.KILL_ENABLED] ?: d.killSwitchEnabled,
             killSwitchEntityId = this[Keys.KILL_ENTITY] ?: d.killSwitchEntityId,
             killSwitchOverrideState = this[Keys.KILL_STATE] ?: d.killSwitchOverrideState,
@@ -128,6 +169,9 @@ class SettingsRepository @Inject constructor(
 
     private fun String.toLocationMode(): LocationMode =
         runCatching { LocationMode.valueOf(this) }.getOrDefault(LocationMode.AT_HOME)
+
+    private fun String.toEnforcementMode(): EnforcementMode =
+        runCatching { EnforcementMode.valueOf(this) }.getOrDefault(EnforcementMode.STRICT)
 
     private fun String.toNoteFormat(): NoteFormat =
         runCatching { NoteFormat.valueOf(this) }.getOrDefault(NoteFormat.PLAIN)

@@ -18,6 +18,11 @@
             tools:replace="android:exported" />
 
         <activity
+            android:name=".ui.lock.EveningSitLockActivity"
+            android:exported="true"
+            tools:replace="android:exported" />
+
+        <activity
             android:name=".ui.lock.EveningLockActivity"
             android:exported="true"
             tools:replace="android:exported" />

@@ -5,6 +5,7 @@ import com.anchor.data.ha.HomeAssistantClient
 import com.anchor.data.ha.KillSwitch
 import com.anchor.data.ha.LocationGate
 import com.anchor.data.ha.Presence
+import com.anchor.data.settings.AnchorSettings
 import com.anchor.data.settings.SettingsProvider
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -36,6 +37,22 @@ class EveningGate @Inject constructor(
         if (packageName !in settings.blockedPackages) {
             return EveningDecision.Allow(SkipReason.NOT_IN_SCOPE)
         }
+        return decideForTonight(settings)
+    }
+
+    /**
+     * The questions on their own, with no app involved: when the window is
+     * open, tonight is not done, and you are in scope. Off unless the user
+     * turned [AnchorSettings.eveningPromptOnItsOwn] on. Only [EveningDecision.Strict]
+     * means "ask"; a simple delay makes no sense without an app to delay.
+     */
+    suspend fun decideUnprompted(): EveningDecision {
+        val settings = settingsProvider()
+        if (!settings.eveningPromptOnItsOwn) return EveningDecision.Allow(SkipReason.NOT_IN_SCOPE)
+        return decideForTonight(settings)
+    }
+
+    private suspend fun decideForTonight(settings: AnchorSettings): EveningDecision {
         if (!TimeWindow.contains(
                 anchorDate.minuteOfDay(),
                 settings.eveningStartMinute,

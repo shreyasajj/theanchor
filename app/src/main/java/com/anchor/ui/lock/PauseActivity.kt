@@ -29,6 +29,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -73,11 +74,16 @@ object PauseCoalescing {
         val limitSeconds = (limit as? LimitDecision.Pause)?.seconds ?: 0
         return maxOf(eveningSeconds, limitSeconds)
     }
+
+    /** Whether either gate wants the screen at all; a zero-second limit pause still asks. */
+    fun wanted(evening: EveningDecision, limit: LimitDecision): Boolean =
+        evening is EveningDecision.SimpleDelay || limit is LimitDecision.Pause
 }
 
 /**
- * The wait before a restricted app opens. Three ways out: sit through it and
- * continue, walk away and close the app, or sit and breathe instead.
+ * The question before a restricted app opens: a countdown when the limit has
+ * one, a plain "Open it?" when it does not. Three ways out: sit through it
+ * and continue, walk away and close the app, or sit and breathe instead.
  *
  * Leaving the screen without finishing counts as abandoned, so coming back to
  * the app starts a fresh countdown rather than waving you through.
@@ -91,18 +97,24 @@ class PauseActivity : ComponentActivity() {
     private var completed = false
     private lateinit var blockedPackage: String
 
+    /** What the ledgers are keyed by: the limit's subject, or the package. */
+    private lateinit var subject: String
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val totalSeconds = intent.getIntExtra(EXTRA_SECONDS, SimpleDelayTimer.DEFAULT_SECONDS)
         blockedPackage = intent.getStringExtra(EXTRA_BLOCKED_PACKAGE).orEmpty()
-        PauseLedger.begin(blockedPackage)
+        subject = intent.getStringExtra(EXTRA_SUBJECT).orEmpty().ifEmpty { blockedPackage }
+        PauseLedger.begin(subject)
         // Durably, so a process restart does not forget the debt.
-        lifecycleScope.launch { settingsRepository.owePause(blockedPackage) }
-        val appLabel = blockedPackage.takeIf { it.isNotEmpty() }?.let { labelFor(it) }
+        lifecycleScope.launch { settingsRepository.owePause(subject) }
+        val appLabel = blockedPackage.takeIf { it.isNotEmpty() }?.let { AppLabels.app(this, it) }
 
         setContent {
             AnchorTheme {
-                val start = remember { SystemClock.elapsedRealtime() }
+                // Saved, so even a recreate (rotation on a device that
+                // ignores configChanges) keeps the countdown where it was.
+                val start = rememberSaveable { SystemClock.elapsedRealtime() }
                 var remaining by remember { mutableIntStateOf(totalSeconds) }
                 var budget by remember { mutableStateOf(emptyList<String>()) }
 
@@ -128,18 +140,31 @@ class PauseActivity : ComponentActivity() {
                         verticalArrangement = Arrangement.Center,
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
-                        Eyebrow(if (appLabel != null) "Opening $appLabel" else "A moment")
-                        Spacer(Modifier.height(20.dp))
-                        Text(
-                            text = if (remaining > 0) "$remaining" else "Go",
-                            style = MaterialTheme.typography.displayLarge,
-                            color = if (remaining > 0) MaterialTheme.colorScheme.onSurface
-                            else MaterialTheme.colorScheme.primary,
+                        val asking = totalSeconds <= 0
+                        Eyebrow(
+                            when {
+                                asking && appLabel != null -> "Open $appLabel?"
+                                asking -> "Open it?"
+                                appLabel != null -> "Opening $appLabel"
+                                else -> "A moment"
+                            }
                         )
-                        Spacer(Modifier.height(12.dp))
+                        Spacer(Modifier.height(20.dp))
+                        if (!asking) {
+                            Text(
+                                text = if (remaining > 0) "$remaining" else "Go",
+                                style = MaterialTheme.typography.displayLarge,
+                                color = if (remaining > 0) MaterialTheme.colorScheme.onSurface
+                                else MaterialTheme.colorScheme.primary,
+                            )
+                            Spacer(Modifier.height(12.dp))
+                        }
                         Text(
-                            text = if (remaining > 0) "Breathe. Is this what you want to do right now?"
-                            else "Go ahead, if you still want to.",
+                            text = when {
+                                asking -> "Is this what you want to do right now?"
+                                remaining > 0 -> "Breathe. Is this what you want to do right now?"
+                                else -> "Go ahead, if you still want to."
+                            },
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             textAlign = TextAlign.Center,
@@ -184,22 +209,22 @@ class PauseActivity : ComponentActivity() {
     /** The wait was served: let the app through. */
     private fun continueToApp() {
         completed = true
-        PauseLedger.complete(blockedPackage, System.currentTimeMillis())
-        lifecycleScope.launch { settingsRepository.settlePause(blockedPackage) }
+        PauseLedger.complete(subject, System.currentTimeMillis())
+        lifecycleScope.launch { settingsRepository.settlePause(subject) }
         finish()
     }
 
     /** Chose not to go in at all. Nothing is credited; the app stays closed. */
     private fun closeApp() {
         completed = true
-        PauseLedger.abandon(blockedPackage)
+        PauseLedger.abandon(subject)
         goHome()
         finish()
     }
 
     private fun meditateInstead() {
         completed = true   // the meditation screen owns the outcome from here
-        startActivity(MeditationActivity.intent(this, blockedPackage))
+        startActivity(MeditationActivity.intent(this, blockedPackage, subject))
         finish()
     }
 
@@ -228,22 +253,21 @@ class PauseActivity : ComponentActivity() {
     /**
      * Pressing home stops this screen without destroying it, so onDestroy is
      * far too late to notice someone walking away mid-countdown. onStop is the
-     * moment the pause stopped being watched.
+     * moment the pause stopped being watched. A rotation is not walking away:
+     * the manifest keeps the screen alive across it, and this guard covers
+     * the case where the system recreates it anyway.
      */
     override fun onStop() {
-        if (!completed) PauseLedger.abandon(blockedPackage)
+        if (!completed && !isChangingConfigurations) PauseLedger.abandon(subject)
         super.onStop()
     }
-
-    private fun labelFor(packageName: String): String? = runCatching {
-        packageManager.getApplicationLabel(packageManager.getApplicationInfo(packageName, 0)).toString()
-    }.getOrNull()
 
     companion object {
         const val EXTRA_SECONDS = "com.anchor.extra.PAUSE_SECONDS"
         const val EXTRA_BLOCKED_PACKAGE = "com.anchor.extra.BLOCKED_PACKAGE"
+        const val EXTRA_SUBJECT = "com.anchor.extra.PAUSE_SUBJECT"
 
-        fun intent(context: Context, seconds: Int, blockedPackage: String): Intent =
+        fun intent(context: Context, seconds: Int, blockedPackage: String, subject: String = blockedPackage): Intent =
             Intent(context, PauseActivity::class.java).apply {
                 addFlags(
                     Intent.FLAG_ACTIVITY_NEW_TASK or
@@ -252,6 +276,7 @@ class PauseActivity : ComponentActivity() {
                 )
                 putExtra(EXTRA_SECONDS, seconds)
                 putExtra(EXTRA_BLOCKED_PACKAGE, blockedPackage)
+                putExtra(EXTRA_SUBJECT, subject)
             }
     }
 }

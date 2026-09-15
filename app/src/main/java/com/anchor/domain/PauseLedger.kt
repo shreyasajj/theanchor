@@ -12,6 +12,10 @@ import java.util.concurrent.ConcurrentHashMap
  * walk away, come back, the suppression is still running). It is to suppress
  * only after the user has sat through it.
  *
+ * Keyed by the pause's *subject*: a limit's [com.anchor.data.usage.AppLimit.subject]
+ * for a limited app, so every member of a group shares the debt, or the
+ * package name for an evening-only pause.
+ *
  * Written by the pause and meditation screens, read by the service and by
  * [LimitGate]. All three live in the same process; this is deliberately a
  * plain object, like [LockdownState].
@@ -32,52 +36,74 @@ object PauseLedger {
 
     private val abandoned = ConcurrentHashMap<String, Boolean>()
 
+    /**
+     * After an early lock the app is on its way out: the confirmation sheet
+     * closes over it and home is launched, and in between the app is in
+     * front for a moment. Evaluating that moment showed the pause to someone
+     * who had just chosen to leave. Ignore the subject briefly instead.
+     */
+    private val ignoredUntil = ConcurrentHashMap<String, Long>()
+    const val EARLY_LOCK_GRACE_MILLIS = 5_000L
+
+    fun ignoreAfterEarlyLock(subject: String, nowMillis: Long) {
+        if (subject.isEmpty()) return
+        ignoredUntil[subject] = nowMillis + EARLY_LOCK_GRACE_MILLIS
+        satisfiedUntil.remove(subject)
+    }
+
+    fun isIgnored(subject: String, nowMillis: Long): Boolean =
+        (ignoredUntil[subject] ?: Long.MIN_VALUE) > nowMillis
+
     /** A pause screen went up for this app. */
-    fun begin(packageName: String) {
-        if (packageName.isEmpty()) return
-        unfinished[packageName] = true
-        satisfiedUntil.remove(packageName)
+    fun begin(subject: String) {
+        if (subject.isEmpty()) return
+        unfinished[subject] = true
+        // The lock's grace was for the moment before this screen; a walk-away
+        // from here must be judged by the gate, not waved through.
+        ignoredUntil.remove(subject)
+        satisfiedUntil.remove(subject)
     }
 
     /** The user sat through the wait, or meditated instead. Let them in. */
-    fun complete(packageName: String, nowMillis: Long) {
-        if (packageName.isEmpty()) return
-        satisfiedUntil[packageName] = nowMillis + SATISFIED_WINDOW_MILLIS
-        unfinished.remove(packageName)
-        abandoned.remove(packageName)
+    fun complete(subject: String, nowMillis: Long) {
+        if (subject.isEmpty()) return
+        satisfiedUntil[subject] = nowMillis + SATISFIED_WINDOW_MILLIS
+        unfinished.remove(subject)
+        abandoned.remove(subject)
     }
 
     /**
      * The pause screen went away without being finished: the user pressed
      * home, switched away, or backed out. The pause is still owed.
      */
-    fun abandon(packageName: String) {
-        if (packageName.isEmpty()) return
-        satisfiedUntil.remove(packageName)
-        abandoned[packageName] = true
+    fun abandon(subject: String) {
+        if (subject.isEmpty()) return
+        satisfiedUntil.remove(subject)
+        abandoned[subject] = true
     }
 
-    fun isSatisfied(packageName: String, nowMillis: Long): Boolean =
-        (satisfiedUntil[packageName] ?: Long.MIN_VALUE) > nowMillis
+    fun isSatisfied(subject: String, nowMillis: Long): Boolean =
+        (satisfiedUntil[subject] ?: Long.MIN_VALUE) > nowMillis
 
     /**
      * True while a pause has been shown for this app but never sat through.
      * [LimitGate] uses it to refuse a session rejoin: an open whose pause was
      * never served is not an open worth continuing.
      */
-    fun hasUnfinishedPause(packageName: String): Boolean = unfinished.containsKey(packageName)
+    fun hasUnfinishedPause(subject: String): Boolean = unfinished.containsKey(subject)
 
     /**
      * True once per abandonment. The service uses it to clear its debounce, so
      * a quick return is re-paused immediately rather than being swallowed as a
      * repeat event.
      */
-    fun consumeAbandonment(packageName: String): Boolean = abandoned.remove(packageName) != null
+    fun consumeAbandonment(subject: String): Boolean = abandoned.remove(subject) != null
 
     /** Test seam. */
     fun reset() {
         satisfiedUntil.clear()
         unfinished.clear()
         abandoned.clear()
+        ignoredUntil.clear()
     }
 }

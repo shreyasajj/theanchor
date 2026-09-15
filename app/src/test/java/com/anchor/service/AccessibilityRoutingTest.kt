@@ -48,6 +48,16 @@ class AccessibilityRoutingTest {
     }
 
     @Test
+    fun `a limit pause with no countdown is still a pause, not nothing`() {
+        assertThat(LimitRouting.route(LimitDecision.Pause(0), allowEvening)).isEqualTo(Route.Pause(0))
+    }
+
+    @Test
+    fun `the evening delay lengthens a countdown-less pause`() {
+        assertThat(LimitRouting.route(LimitDecision.Pause(0), EveningDecision.SimpleDelay)).isEqualTo(Route.Pause(5))
+    }
+
+    @Test
     fun `a pause and a simple delay collapse into one longer pause`() {
         assertThat(LimitRouting.route(LimitDecision.Pause(30), EveningDecision.SimpleDelay)).isEqualTo(Route.Pause(30))
     }

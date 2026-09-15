@@ -5,25 +5,28 @@ import android.content.Intent
 import android.view.accessibility.AccessibilityEvent
 import com.anchor.data.settings.SettingsRepository
 import com.anchor.data.usage.AppLimit
-import com.anchor.data.usage.AppLimitDao
 import com.anchor.domain.AnchorDate
 import com.anchor.domain.EveningDecision
 import com.anchor.domain.EveningGate
+import com.anchor.domain.EveningSitGate
 import com.anchor.domain.ForegroundAction
 import com.anchor.domain.ForegroundAppDecider
 import com.anchor.domain.LimitDecision
 import com.anchor.domain.LimitGate
 import com.anchor.domain.LimitReason
+import com.anchor.domain.LockKind
 import com.anchor.domain.LockdownEnforcer
-import com.anchor.domain.PauseLedger
 import com.anchor.domain.MorningDecision
 import com.anchor.domain.MorningGate
+import com.anchor.domain.PauseLedger
 import com.anchor.domain.SessionCapWatcher
+import com.anchor.domain.SitDecision
 import com.anchor.domain.SkipReason
 import com.anchor.ui.lock.ConfirmLockActivity
 import com.anchor.ui.lock.EveningLockActivity
 import com.anchor.ui.lock.LimitBlockedActivity
 import com.anchor.ui.lock.PauseActivity
+import com.anchor.ui.lock.SessionEndScreens
 import com.anchor.ui.lock.PauseCoalescing
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
@@ -50,27 +53,29 @@ object LimitRouting {
     fun route(limit: LimitDecision, evening: EveningDecision): Route = when {
         limit is LimitDecision.Blocked -> Route.Blocked(limit.reason, limit.resetsAtMillis)
         evening is EveningDecision.Strict -> Route.StrictEvening
-        else -> {
-            val seconds = PauseCoalescing.secondsFor(evening, limit)
-            if (seconds > 0) Route.Pause(seconds) else Route.None
-        }
+        PauseCoalescing.wanted(evening, limit) -> Route.Pause(PauseCoalescing.secondsFor(evening, limit))
+        else -> Route.None
     }
 }
 
-/**
- * Suppresses repeat handling of the same package within a short window.
- * Android emits several TYPE_WINDOW_STATE_CHANGED events per app launch;
- * without this the gates would be queried (and HA hit) several times per open.
- */
 /** Whether the relock button belongs on screen for the app in front. */
 object RelockButton {
     fun shouldShowFor(limit: AppLimit?, enabledInSettings: Boolean = true): Boolean =
-        enabledInSettings && limit != null && limit.enabled && limit.hasAnyLimit
+        enabledInSettings && limit != null && limit.isActive
 }
 
 /**
- * Throttles the morning re-check to once a minute. The gate's cheap checks
- * (window, already done) cost nothing, but past them it calls Home Assistant.
+ * What the pause and blocked screens key their ledgers by: the limit's
+ * subject when the app has one (so a group shares the debt), otherwise the
+ * package, for an evening-only pause.
+ */
+object PauseSubject {
+    fun of(packageName: String, limit: AppLimit?): String = limit?.subject ?: packageName
+}
+
+/**
+ * Throttles the lockdown re-checks to once a minute. The gates' cheap checks
+ * (window, already done) cost nothing, but past them they call Home Assistant.
  */
 class MorningRecheck(private val intervalMillis: Long = 60_000) {
     private var lastAtMillis: Long? = null
@@ -83,6 +88,11 @@ class MorningRecheck(private val intervalMillis: Long = 60_000) {
     }
 }
 
+/**
+ * Suppresses repeat handling of the same package within a short window.
+ * Android emits several TYPE_WINDOW_STATE_CHANGED events per app launch;
+ * without this the gates would be queried (and HA hit) several times per open.
+ */
 class PackageDebounce(private val windowMillis: Long = 3_000) {
     private var lastPackage: String? = null
     private var lastAtMillis: Long = Long.MIN_VALUE
@@ -110,15 +120,15 @@ class AnchorAccessibilityService : AccessibilityService() {
 
     @Inject lateinit var eveningGate: EveningGate
     @Inject lateinit var morningGate: MorningGate
+    @Inject lateinit var eveningSitGate: EveningSitGate
     @Inject lateinit var limitGate: LimitGate
-    @Inject lateinit var appLimitDao: AppLimitDao
     @Inject lateinit var anchorDate: AnchorDate
     @Inject lateinit var enforcer: LockdownEnforcer
     @Inject lateinit var settingsRepository: SettingsRepository
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val debounce = PackageDebounce()
-    private val morningRecheck = MorningRecheck()
+    private val lockRecheck = MorningRecheck()
 
     /** The most recent non-system foreground package, for the relock button. */
     @Volatile private var lastForegroundPackage: String? = null
@@ -132,7 +142,7 @@ class AnchorAccessibilityService : AccessibilityService() {
      * practice. An overlay we own appears exactly where it is useful.
      *
      * Tapping it opens a confirmation sheet; confirming ends the app's session
-     * early, which starts any cooldown and makes the next open cost half.
+     * early, exactly as if its time had run out.
      */
     private val relockBubble: RelockBubble by lazy {
         RelockBubble(this, ::onBubbleTapped)
@@ -147,12 +157,16 @@ class AnchorAccessibilityService : AccessibilityService() {
     private val sessionCapWatcher by lazy {
         SessionCapWatcher(
             scope = scope,
-            limitGate = limitGate,
-            appLimitDao = appLimitDao,
+            queries = limitGate,
             anchorDate = anchorDate,
-            onCapReached = { _, now ->
+            onCapReached = { packageName, _ ->
                 relockBubble.hideNow()
-                startActivity(LimitBlockedActivity.intent(this, LimitReason.SESSION_CAP, now, lastForegroundPackage))
+                scope.launch {
+                    // The session is over: ask again, with the pause. Unless a
+                    // new open cannot happen, in which case say why.
+                    SessionEndScreens.intentFor(this@AnchorAccessibilityService, limitGate, packageName)
+                        ?.let { startActivity(it) }
+                }
             },
         )
     }
@@ -164,28 +178,46 @@ class AnchorAccessibilityService : AccessibilityService() {
         scope.launch {
             val settings = settingsRepository.current()
 
-            // The alarm is one shot at the window start. If that moment was
-            // missed (not home yet, HA down, phone off), keep asking while the
-            // phone is in use during the window, once a minute at most.
+            // The alarms are one shot at each window start. If that moment
+            // was missed (not home yet, HA down, phone off), keep asking
+            // while the phone is in use during the window, once a minute.
             if (!enforcer.isActive && packageName != EveningGate.OWN_PACKAGE &&
-                morningRecheck.shouldCheck(System.currentTimeMillis()) &&
-                morningGate.decide() is MorningDecision.Lock
+                lockRecheck.shouldCheck(System.currentTimeMillis())
             ) {
-                enforcer.begin()
-                return@launch
+                when {
+                    morningGate.decide() is MorningDecision.Lock -> {
+                        enforcer.begin(LockKind.MORNING)
+                        return@launch
+                    }
+                    eveningSitGate.decide() is SitDecision.Lock -> {
+                        enforcer.begin(LockKind.EVENING_SIT)
+                        return@launch
+                    }
+                    // Not a lockdown, but asked again a minute later if it
+                    // was dismissed, so a spent limit never buries it.
+                    eveningGate.decideUnprompted() is EveningDecision.Strict -> {
+                        relockBubble.hideNow()
+                        startActivity(EveningLockActivity.unpromptedIntent(this@AnchorAccessibilityService))
+                        return@launch
+                    }
+                }
             }
 
             when (
                 val action = ForegroundAppDecider.decide(
                     packageName = packageName,
-                    morningLockActive = enforcer.isActive,
+                    lockActive = enforcer.isActive,
                     settings = settings,
                 )
             ) {
                 is ForegroundAction.Ignore -> {
-                    // Leaving a capped app for the dialer must stop its timer.
-                    sessionCapWatcher.cancel()
-
+                    // Neither the session timer nor the button is touched
+                    // here. Ignore covers system windows, the keyboard and
+                    // toasts, which come and go in an instant, and our own
+                    // overlay; none of them mean the user left. The timer
+                    // checks the usage log when it fires, which is how a
+                    // phone call is told apart from the keyboard.
+                    //
                     // The button is deliberately left alone here. Ignore covers
                     // system windows, the keyboard and toasts, which come and
                     // go in an instant, and -- the trap -- our own overlay:
@@ -197,7 +229,7 @@ class AnchorAccessibilityService : AccessibilityService() {
                     // launched, below.
                 }
 
-                is ForegroundAction.ReassertMorningLock -> {
+                is ForegroundAction.ReassertLock -> {
                     sessionCapWatcher.cancel()
                     relockBubble.hide()
                     // Bypasses the debounce: escaping the lock must always
@@ -208,7 +240,8 @@ class AnchorAccessibilityService : AccessibilityService() {
                 is ForegroundAction.EvaluateEvening -> {
                     val target = action.packageName
                     lastForegroundPackage = target
-                    if (RelockButton.shouldShowFor(appLimitDao.find(target), settings.showRelockBubble)) {
+                    val limit = limitGate.limitFor(target)
+                    if (RelockButton.shouldShowFor(limit, settings.showRelockBubble)) {
                         relockBubble.show(target)
                     } else {
                         relockBubble.hide()
@@ -219,23 +252,27 @@ class AnchorAccessibilityService : AccessibilityService() {
                     sessionCapWatcher.onForegroundApp(target)
 
                     val now = System.currentTimeMillis()
+                    val subject = PauseSubject.of(target, limit)
+
+                    // Just locked early: the app is on its way out, not in.
+                    if (PauseLedger.isIgnored(subject, now)) return@launch
 
                     // A pause the user actually sat through lets the app in.
                     // One they walked away from does not, and clears the
                     // debounce so the retry is not swallowed as a repeat.
-                    if (PauseLedger.isSatisfied(target, now)) return@launch
-                    if (PauseLedger.consumeAbandonment(target)) debounce.clear()
+                    if (PauseLedger.isSatisfied(subject, now)) return@launch
+                    if (PauseLedger.consumeAbandonment(subject)) debounce.clear()
                     if (!debounce.shouldHandle(target, now)) return@launch
 
                     // Limits first: a spent budget outranks the evening ritual.
-                    val limit = limitGate.decide(target)
-                    val evening = if (limit is LimitDecision.Blocked) {
+                    val decision = limitGate.decide(target)
+                    val evening = if (decision is LimitDecision.Blocked) {
                         EveningDecision.Allow(SkipReason.NOT_IN_SCOPE)   // not consulted
                     } else {
                         eveningGate.decide(target)
                     }
 
-                    when (val route = LimitRouting.route(limit, evening)) {
+                    when (val route = LimitRouting.route(decision, evening)) {
                         is Route.None -> Unit
                         is Route.StrictEvening -> {
                             relockBubble.hideNow()
@@ -243,7 +280,9 @@ class AnchorAccessibilityService : AccessibilityService() {
                         }
                         is Route.Pause -> {
                             relockBubble.hideNow()
-                            startActivity(PauseActivity.intent(this@AnchorAccessibilityService, route.seconds, target))
+                            startActivity(
+                                PauseActivity.intent(this@AnchorAccessibilityService, route.seconds, target, subject)
+                            )
                         }
                         is Route.Blocked -> {
                             relockBubble.hideNow()

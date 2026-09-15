@@ -1,5 +1,6 @@
 package com.anchor.ui.home
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -13,6 +14,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.ExpandLess
+import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -21,12 +24,20 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.anchor.data.db.DailyLog
 import com.anchor.data.ha.OverrideStatus
+import com.anchor.domain.LimitStatus
 import com.anchor.ui.components.AnchorCard
 import com.anchor.ui.components.Eyebrow
 import com.anchor.ui.components.Hint
@@ -37,8 +48,11 @@ import com.anchor.ui.components.SectionCard
 import com.anchor.ui.components.SoftDivider
 import com.anchor.ui.components.StatusDot
 import com.anchor.ui.settings.sections.formatMinute
+import java.time.Instant
 import java.time.LocalDate
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import kotlinx.coroutines.delay
 import java.util.Locale
 
 @Composable
@@ -69,7 +83,7 @@ fun DashboardScreen(
         if (state.overrideStatus == OverrideStatus.ACTIVE) item(key = "override") { OverrideBanner() }
         if (setup != null) item(key = "setup") { SetupCard(setup, onFixPermission) }
         item(key = "today") { TodayCard(state, onAnswerMorning, onAnswerEvening, onMeditate) }
-        if (state.usage.isNotEmpty()) item(key = "limits") { LimitsCard(state.usage) }
+        if (state.usage.isNotEmpty()) item(key = "limits") { LimitsCard(state.usage, state.streakDays) }
         item(key = "week") { WeekCard(state.week) }
         item(key = "status") { StatusCard(state) }
     }
@@ -162,11 +176,22 @@ private fun TodayCard(
             onAnswer = onAnswerEvening,
         )
         SoftDivider(Modifier.padding(vertical = 12.dp))
+        val sitRequired = s.eveningSitRequired
         Row(verticalAlignment = Alignment.CenterVertically) {
-            StatusDot(state.meditationSecondsToday > 0, size = 12)
+            StatusDot(if (sitRequired) state.eveningSitDone else state.meditationSecondsToday > 0, size = 12)
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
-                Text("Breathing", style = MaterialTheme.typography.titleMedium)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Breathing", style = MaterialTheme.typography.titleMedium)
+                    if (sitRequired) {
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            "${s.eveningSitMinutes} min by ${formatMinute(s.eveningStartMinute)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.outline,
+                        )
+                    }
+                }
                 Text(
                     text = if (state.meditationSecondsToday > 0) {
                         val minutes = state.meditationSecondsToday / 60
@@ -178,7 +203,8 @@ private fun TodayCard(
                 )
             }
             Spacer(Modifier.width(8.dp))
-            TextButton(onClick = onMeditate) { Text("Sit now") }
+            if (sitRequired && state.eveningSitDone) Pill("Done", PillTone.GOOD)
+            else TextButton(onClick = onMeditate) { Text("Sit now") }
         }
         Hint(
             "The morning check-in appears on its own during the window when you are home. " +
@@ -219,27 +245,127 @@ private fun PhaseRow(name: String, window: String, done: Boolean, preview: Strin
 }
 
 @Composable
-private fun LimitsCard(rows: List<UsageRow>) {
-    SectionCard(title = "Today's limits") {
+private fun LimitsCard(rows: List<UsageRow>, streakDays: Int?) {
+    // A one-second clock for the countdowns. The rows carry absolute end
+    // times, so this only re-renders text; usage itself is re-read by the
+    // view model every few seconds.
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    val counting = rows.any { it.status.hasCountdown }
+    LaunchedEffect(counting) {
+        while (counting) {
+            now = System.currentTimeMillis()
+            delay(1_000)
+        }
+    }
+    SectionCard(
+        title = "Today's limits",
+        trailing = streakDays?.let { { Pill(streakLabel(it), if (it > 0) PillTone.GOOD else PillTone.NEUTRAL) } },
+    ) {
         rows.forEachIndexed { index, row ->
             if (index > 0) Spacer(Modifier.height(16.dp))
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(row.label, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
-                val time = row.limitMinutes?.let { "${row.usedMinutes} / $it min" } ?: "${row.usedMinutes} min"
-                val opens = row.limitOpens?.let { "  ·  ${formatUnits(row.openUnits)} / $it opens" } ?: ""
-                Text(
-                    text = time + opens,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (row.isExhausted) MaterialTheme.colorScheme.error
-                    else MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            row.timeFraction?.let { fraction ->
-                Spacer(Modifier.height(8.dp))
-                Meter(fraction = fraction, exhausted = row.isExhausted)
+            LimitRow(row, now)
+        }
+    }
+}
+
+private val LimitStatus.hasCountdown: Boolean
+    get() = this is LimitStatus.Cooldown || (this is LimitStatus.InSession && endsAtMillis != null)
+
+@Composable
+private fun LimitRow(row: UsageRow, now: Long) {
+    var expanded by rememberSaveable(row.label) { mutableStateOf(false) }
+    val (statusText, tone) = statusPill(row)
+    Column(Modifier.fillMaxWidth().clickable { expanded = !expanded }) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(row.label, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+            Pill(statusText, tone)
+            Spacer(Modifier.width(6.dp))
+            Icon(
+                if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                contentDescription = if (expanded) "Hide details" else "Show details",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.height(4.dp))
+        val time = row.limitMinutes?.let { "${row.usedMinutes} / $it min" } ?: "${row.usedMinutes} min"
+        val opens = row.limitOpens?.let { "  ·  ${formatUnits(row.openUnits)} / $it opens" } ?: ""
+        Text(
+            text = if (row.bypassed) "Waived today" else time + opens,
+            style = MaterialTheme.typography.bodySmall,
+            color = if (row.isExhausted && !row.bypassed) MaterialTheme.colorScheme.error
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        row.fraction?.let { fraction ->
+            Spacer(Modifier.height(8.dp))
+            Meter(fraction = fraction, exhausted = row.isExhausted && !row.bypassed)
+        }
+        if (expanded) {
+            Spacer(Modifier.height(10.dp))
+            Column(Modifier.padding(start = 12.dp)) {
+                Text(statusDetail(row, now), style = MaterialTheme.typography.bodyMedium)
+                row.sessionMinutes?.let {
+                    Hint("Sessions last $it min by the clock, then you are asked again.")
+                }
+                row.cooldownMinutes?.let { Hint("$it min cooldown after closing.") }
+                if (row.members.isNotEmpty()) {
+                    Spacer(Modifier.height(10.dp))
+                    Eyebrow("Per app")
+                    Spacer(Modifier.height(6.dp))
+                    row.members.forEach { member ->
+                        Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text(member.label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                            Text(
+                                "${member.usedMinutes} min  ·  ${member.opens} ${if (member.opens == 1) "open" else "opens"}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
             }
         }
     }
+}
+
+/** The short word on the row: what the next launch of this limit would meet. */
+fun statusPill(row: UsageRow): Pair<String, PillTone> = when (val s = row.status) {
+    LimitStatus.Waived -> "Waived" to PillTone.NEUTRAL
+    LimitStatus.OffHours -> "Off hours" to PillTone.NEUTRAL
+    is LimitStatus.InSession -> (if (s.inForeground) "In use" else "In session") to PillTone.ACCENT
+    is LimitStatus.Spent -> "Spent" to PillTone.BAD
+    is LimitStatus.Cooldown -> "Cooling down" to PillTone.BAD
+    LimitStatus.Available -> "Available" to PillTone.GOOD
+}
+
+/** The long form inside the dropdown, with the countdown where there is one. */
+fun statusDetail(row: UsageRow, now: Long): String = when (val s = row.status) {
+    LimitStatus.Waived -> "Walked through today. The limit is back at the next reset."
+    LimitStatus.OffHours -> "Outside this limit's hours. Nothing is counted or blocked now."
+    is LimitStatus.InSession -> when {
+        s.endsAtMillis == null -> "In the foreground now. No session length is set."
+        s.inForeground -> "${countdown(s.endsAtMillis - now)} left in this session."
+        else -> "${countdown(s.endsAtMillis - now)} left to come back without a new open."
+    }
+    is LimitStatus.Spent -> "Today's budget is spent. Back at ${clockTime(s.resetsAtMillis)}."
+    is LimitStatus.Cooldown -> "Cooling down. Can be opened in ${countdown(s.untilMillis - now)}."
+    LimitStatus.Available -> "The next open starts a new session."
+}
+
+/** "4:32" for the countdowns; never negative. */
+fun countdown(millis: Long): String {
+    val total = (millis / 1_000L).coerceAtLeast(0)
+    return "%d:%02d".format(total / 60, total % 60)
+}
+
+private fun clockTime(millis: Long): String =
+    Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault()).toLocalTime()
+        .format(DateTimeFormatter.ofPattern("HH:mm"))
+
+/** "3-day streak" and friends, kept simple enough to test by eye. */
+fun streakLabel(days: Int): String = when (days) {
+    0 -> "No streak yet"
+    1 -> "1-day streak"
+    else -> "$days-day streak"
 }
 
 @Composable

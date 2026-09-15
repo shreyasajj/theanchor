@@ -6,8 +6,8 @@ sealed interface ForegroundAction {
     /** Leave the foreground app alone. */
     data object Ignore : ForegroundAction
 
-    /** The morning lock is up and something escaped it; bring it back. */
-    data object ReassertMorningLock : ForegroundAction
+    /** A lockdown (morning questions or evening sit) is up and something escaped it; bring it back. */
+    data object ReassertLock : ForegroundAction
 
     /** Hand this package to the limit and evening gates. */
     data class EvaluateEvening(val packageName: String) : ForegroundAction
@@ -16,7 +16,7 @@ sealed interface ForegroundAction {
 /**
  * Pure classification of a foreground-app change.
  *
- * The allowlist here is a safety feature, not a convenience: during a morning
+ * The allowlist here is a safety feature, not a convenience: during a
  * lockdown the user must always be able to place a call, send a message, and
  * reach system surfaces. Anything ambiguous resolves to [ForegroundAction.Ignore].
  */
@@ -42,7 +42,7 @@ object ForegroundAppDecider {
 
     fun decide(
         packageName: String,
-        morningLockActive: Boolean,
+        lockActive: Boolean,
         settings: AnchorSettings,
     ): ForegroundAction {
         if (packageName.isBlank()) return ForegroundAction.Ignore
@@ -50,8 +50,8 @@ object ForegroundAppDecider {
         if (isAlwaysAllowed(packageName)) return ForegroundAction.Ignore
         if (packageName in settings.allowlistPackages) return ForegroundAction.Ignore
 
-        return if (morningLockActive) {
-            ForegroundAction.ReassertMorningLock
+        return if (lockActive) {
+            ForegroundAction.ReassertLock
         } else {
             ForegroundAction.EvaluateEvening(packageName)
         }

@@ -49,9 +49,12 @@
         </activity>
 
         <!-- The lock screens live in their own task, excluded from recents,
-             so they cannot be swiped away from the task switcher. -->
+             so they cannot be swiped away from the task switcher. They handle
+             rotation themselves so a countdown or a breath is not restarted
+             by turning the phone. -->
         <activity
             android:name=".ui.lock.MorningLockActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
             android:excludeFromRecents="true"
             android:exported="false"
             android:launchMode="singleInstance"
@@ -60,7 +63,16 @@
             android:turnScreenOn="true" />
 
         <activity
+            android:name=".ui.lock.EveningSitLockActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleInstance"
+            android:taskAffinity=".lock" />
+
+        <activity
             android:name=".ui.lock.EveningLockActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
             android:excludeFromRecents="true"
             android:exported="false"
             android:launchMode="singleInstance"
@@ -68,6 +80,7 @@
 
         <activity
             android:name=".ui.lock.PauseActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
             android:excludeFromRecents="true"
             android:exported="false"
             android:launchMode="singleInstance"
@@ -75,6 +88,7 @@
 
         <activity
             android:name=".ui.lock.LimitBlockedActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
             android:excludeFromRecents="true"
             android:exported="false"
             android:launchMode="singleInstance"
@@ -82,6 +96,7 @@
 
         <activity
             android:name=".ui.lock.MeditationActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
             android:excludeFromRecents="true"
             android:exported="false"
             android:launchMode="singleInstance"
@@ -89,6 +104,7 @@
 
         <activity
             android:name=".ui.lock.ConfirmLockActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
             android:excludeFromRecents="true"
             android:exported="false"
             android:launchMode="singleInstance"

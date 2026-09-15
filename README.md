@@ -48,18 +48,44 @@ Answer once and the block lifts for the rest of the night. The window crosses
 midnight, and 01:00 belongs to the evening that preceded it, so the night is one
 unit rather than two.
 
+Two optional extras live under Settings → Evening. **Ask the evening questions on
+their own** shows them when the window opens and you are in scope, and again once a
+minute while the phone is in use until answered, so a spent limit on a blocked app
+cannot keep them from being asked. **Sit before the evening opens up** holds the
+phone on a guided breath, like the morning lock, until the day's sitting reaches a
+minute count you choose. Sits done earlier in the day count, and short sits add up.
+
 ### Usage limits
 
-Five independent, optional controls per app. Any subset can be set; an app with
-none is untouched. They apply 24 hours a day, regardless of the evening window.
+A limit is a named group of one or more apps sharing one budget; a single limited
+app is a group of one. An app with no limit is untouched. Limits are independent of
+the evening window.
 
 | Control | Meaning |
 |---|---|
+| Limit by | Opens per day or minutes per day; only the chosen one is enforced |
+| Opens per day | Number of launches allowed; 0 shuts the app for the whole window |
 | Minutes per day | Total foreground time allowed |
-| Opens per day | Number of launches allowed |
+| Session | Foreground minutes per open, interrupted mid-use |
 | Cooldown | Minimum gap after closing before reopening |
-| Max session | Longest single session, interrupted mid-use |
 | Pre-open pause | A forced wait before the app opens, showing what is left |
+| Hours | Optional; the limit is in force only between these times |
+
+**Groups.** Every member's usage is summed, switching between members inside a
+session is the same open, and the session timer keeps running across them. Put
+YouTube and Instagram in one group with two opens and ten-minute sessions: ten
+minutes of YouTube is one open, five of Instagram plus five of YouTube is the
+second, and a third launch of either is blocked.
+
+**Schedules.** A limit with hours does nothing outside them and counts only what
+happens inside them. The same app may be in several limits whose hours never
+overlap, for two opens in the afternoon and one in the evening. The app picker
+hides anything another limit already covers at an overlapping time.
+
+**Streaks.** Under "When a limit is reached", *Block the app* is a wall. *Let me
+through, but end my streak* adds a door to the blocked screen: taking it waives that
+limit until the next reset and restarts the streak tomorrow. The streak is the run
+of usage days on which you never took the door, shown on the dashboard.
 
 **Nothing is counted.** At each decision the app queries `UsageStatsManager` for the
 raw foreground events of the current day and derives elapsed time, open count and
@@ -68,11 +94,15 @@ double-count when the service restarts; derived state cannot. The one exception 
 the session cap, which has to interrupt an app already in use, so it is a timer the
 accessibility service owns and cancels whenever the foreground app changes.
 
-**Leaving and coming back.** If an app has a session cap, returning before that
-cap's window has elapsed continues the same open: no second open charged and no
-cooldown served. The pause still appears, because it is friction on *entering* the
-app and coming back is entering. The daily time budget still applies, and the cap
-keeps counting from the first open, so stepping out does not extend the session.
+**Sessions.** A session is the clock until you are asked again. It runs from the
+moment you go in, whether or not you stay. Inside it, coming back is the same open:
+no second open charged, no cooldown, no pause. When it elapses while you are in the
+app you are pulled out into the pause, and Continue is a new open; if the budget is
+spent or a cooldown applies, that screen says so instead. Only the minutes budget
+counts foreground time: with 20 minutes a day and 5-minute sessions, two minutes in
+the app and a return five minutes later is a new question with 18 minutes left.
+An early lock ends the session at once and shows the same question; Continue is a
+new open, charged in full.
 
 An open has to have been running for at least fifteen seconds before returning to it
 counts as a rejoin. Launching an app emits a foreground event and then a background
@@ -89,16 +119,17 @@ left today, opens left today, and time left in this session. Three ways out:
 
 Leaving the pause screen without finishing it does **not** let you in. Returning to
 the app starts the countdown again from the top. Only a pause you actually sat
-through, or a sit you completed, opens the door.
+through, or a sit you completed, opens the door. Rotating the phone is not leaving:
+the countdown carries on.
 
 **Locking early.** While a limited app is in front, a small floating lock button
 appears. It fades to nearly transparent if you leave it alone, so it does not sit
 over a film, brightens when touched, and can be dragged anywhere. It goes away the
 moment you leave the app, and can be switched off entirely in Settings.
 
-Tapping it asks "Lock this app now?"; confirming ends the session, starts any
-cooldown immediately, and makes the next open cost half an open instead of one. The
-dashboard shows fractional opens.
+Tapping it asks "Lock this app now?"; confirming ends the session exactly as the
+clock running out does: any cooldown starts immediately and the pause screen
+appears at once. Continue from there is a whole new open.
 
 This is the app's own overlay rather than Android's accessibility shortcut. The
 system shortcut is assigned by the user and its button is drawn by the system, so a
@@ -245,10 +276,13 @@ Every foreground app change runs through the same chain. The first answer wins.
 
 1. **`ForegroundAppDecider`** — is this the dialer, messaging, emergency, system UI,
    the Anchor itself, or on your allowlist? Then leave it alone, always. Otherwise,
-   if the morning lock is up, bring it back; if not, hand the package on.
-2. **`LimitGate`** — no limit row, or the kill switch is on, then allow. A return
-   inside the session window continues the open. Otherwise: cooldown, then open
-   count, then time budget, then any configured pause.
+   if a lockdown (morning questions or evening sit) is up, bring it back; if not,
+   hand the package on.
+2. **`LimitGate`** — no limit in force at this hour, the kill switch is on, or the
+   limit was walked through today, then allow. A return inside the session
+   continues the open. Otherwise: the daily budget (opens or minutes, whichever
+   the limit is by), then cooldown, then any configured pause. The budget comes
+   before the cooldown so you are never told to wait twice.
 3. **`EveningGate`** — not a blocked app, outside the window, tonight already
    answered, or the kill switch is on, then allow. Otherwise the location gate
    decides strict questions or a 5-second pause.
@@ -295,17 +329,20 @@ questions you add yourself get a `custom:<uuid>` slot key and their answers live
 JSON column on the same row. Editing a question keeps its slot key, so past answers
 stay attached to it.
 
-Limits live in `app_limit` keyed by package name, early locks in `early_lock`, and
-finished sits in `meditation_session`. Sits are recorded to the database and shown on
+Limits live in `app_limit`, one row per group with its member packages, mode,
+budget and hours; early locks in `early_lock`, keyed by the limit; and
+finished sits in `meditation_session`. Pauses owed, streak bypasses and the
+streak's start day live in the settings store. Sits are recorded to the database and shown on
 the dashboard; they are not yet written into the Markdown files.
-The database uses destructive migration: a schema change recreates it, which is fine
-for a personal app whose durable record is the Markdown files.
+Schema changes migrate (`data/db/Migrations.kt`); the database is never recreated,
+so an update keeps the questions, the log and the sits. The migration from version 3
+rebuilds the limit tables, so limits are entered again once after it.
 
 ---
 
 ## Not included
 
-- Per-app schedules, such as different limits at the weekend.
+- Weekday schedules. Hours repeat every day.
 - A device-wide budget across all apps.
 - Usage history charts. The dashboard shows today; anything richer belongs in
   whatever reads the Markdown.

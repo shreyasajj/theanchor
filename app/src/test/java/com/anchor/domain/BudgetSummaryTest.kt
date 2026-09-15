@@ -1,5 +1,6 @@
 package com.anchor.domain
 
+import com.anchor.data.usage.LimitMode
 import com.anchor.data.usage.AppLimit
 import com.anchor.data.usage.AppUsageSummary
 import com.google.common.truth.Truth.assertThat
@@ -19,13 +20,13 @@ class BudgetSummaryTest {
 
     @Test
     fun `a disabled limit says nothing`() {
-        val limit = AppLimit(app, enabled = false, dailyMinutes = 30)
+        val limit = AppLimit(app, enabled = false, limitMode = LimitMode.TIME, dailyMinutes = 30)
         assertThat(BudgetSummary.describe(limit, AppUsageSummary())).isEmpty()
     }
 
     @Test
     fun `it reports the minutes left today`() {
-        val limit = AppLimit(app, dailyMinutes = 30)
+        val limit = AppLimit(app, limitMode = LimitMode.TIME, dailyMinutes = 30)
         val summary = AppUsageSummary(foregroundMillis = 12 * minute)
 
         assertThat(BudgetSummary.describe(limit, summary)).containsExactly("18 of 30 minutes left today")
@@ -33,7 +34,7 @@ class BudgetSummaryTest {
 
     @Test
     fun `minutes left never goes negative`() {
-        val limit = AppLimit(app, dailyMinutes = 30)
+        val limit = AppLimit(app, limitMode = LimitMode.TIME, dailyMinutes = 30)
         val summary = AppUsageSummary(foregroundMillis = 45 * minute)
 
         assertThat(BudgetSummary.describe(limit, summary)).containsExactly("0 of 30 minutes left today")
@@ -48,7 +49,7 @@ class BudgetSummaryTest {
     }
 
     @Test
-    fun `a half open from an early lock shows as a half`() {
+    fun `fractional open units are shown as they are`() {
         val limit = AppLimit(app, dailyOpens = 5)
         val summary = AppUsageSummary(opens = 3, openUnits = 2.5)
 
@@ -58,7 +59,7 @@ class BudgetSummaryTest {
     @Test
     fun `it reports the time left in this session`() {
         val limit = AppLimit(app, sessionMinutes = 10)
-        val summary = AppUsageSummary(currentSessionStartAtMillis = now - 4 * minute)
+        val summary = AppUsageSummary(currentSessionStartAtMillis = now - 4 * minute, lastOpenStartAtMillis = now - 4 * minute)
 
         assertThat(BudgetSummary.describe(limit, summary, now))
             .containsExactly("6 of 10 minutes left in this session")
@@ -74,15 +75,22 @@ class BudgetSummaryTest {
 
     @Test
     fun `every configured mechanic gets its own line, in a fixed order`() {
-        val limit = AppLimit(app, dailyMinutes = 30, dailyOpens = 5, sessionMinutes = 10)
+        val limit = AppLimit(app, limitMode = LimitMode.TIME, dailyMinutes = 30, dailyOpens = 5, sessionMinutes = 10)
         val summary = AppUsageSummary(
             foregroundMillis = 10 * minute,
             openUnits = 1.0,
             currentSessionStartAtMillis = now - 2 * minute,
+            lastOpenStartAtMillis = now - 2 * minute,
         )
 
+        // Time mode: the open budget is not enforced, so it is not reported.
         assertThat(BudgetSummary.describe(limit, summary, now)).containsExactly(
             "20 of 30 minutes left today",
+            "8 of 10 minutes left in this session",
+        ).inOrder()
+
+        val byOpens = limit.copy(limitMode = LimitMode.OPENS)
+        assertThat(BudgetSummary.describe(byOpens, summary, now)).containsExactly(
             "4 of 5 opens left today",
             "8 of 10 minutes left in this session",
         ).inOrder()
