@@ -1,0 +1,23 @@
+# Dependabot opens a pull request whenever a dependency has a known
+# vulnerability with a fixed version. open-pull-requests-limit: 0 turns off
+# routine version bumps, so only security fixes arrive; those are merged by
+# dependabot-auto-merge.yml once CI passes.
+version: 2
+updates:
+  - package-ecosystem: gradle
+    directory: /
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+    labels: [dependencies, security]
+    commit-message:
+      prefix: "fix(deps)"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 0
+    labels: [dependencies, security]
+    commit-message:
+      prefix: "fix(deps)"
