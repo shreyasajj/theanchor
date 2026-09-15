@@ -57,6 +57,28 @@ class AnchorDate @Inject constructor(private val clock: Clock) {
             .toInstant()
             .toEpochMilli()
 
+    /**
+     * When the current occurrence of a daily window began. Assumes now is
+     * inside it: for a wrapping window (22:00-02:00) at 01:00 that is
+     * yesterday at 22:00.
+     */
+    fun windowStartMillis(startMinute: Int, endMinute: Int): Long {
+        val current = now()
+        val date = if (TimeWindow.wraps(startMinute, endMinute) && minuteOfDay() < endMinute) {
+            current.toLocalDate().minusDays(1)
+        } else current.toLocalDate()
+        return date.atTime(startMinute / 60, startMinute % 60).atZone(clock.zone).toInstant().toEpochMilli()
+    }
+
+    /** When the current occurrence of a daily window ends. Assumes now is inside it. */
+    fun windowEndMillis(startMinute: Int, endMinute: Int): Long {
+        val current = now()
+        val date = if (TimeWindow.wraps(startMinute, endMinute) && minuteOfDay() >= startMinute) {
+            current.toLocalDate().plusDays(1)
+        } else current.toLocalDate()
+        return date.atTime(endMinute / 60, endMinute % 60).atZone(clock.zone).toInstant().toEpochMilli()
+    }
+
     private fun dayAnchoredAt(boundaryMinute: Int): String {
         val current = now()
         val minute = current.hour * 60 + current.minute

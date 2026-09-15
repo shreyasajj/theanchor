@@ -14,13 +14,13 @@ import java.time.ZoneId
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/** Pure next-fire-time arithmetic. */
+/** Pure next-fire-time arithmetic, shared by the morning and evening alarms. */
 object NextMorningAlarm {
 
     /**
-     * The next instant at which the morning window opens, strictly after
-     * [nowMillis]. At exactly the start minute we schedule tomorrow, because
-     * "now" means the alarm for today has already fired.
+     * The next instant at which a window opens, strictly after [nowMillis].
+     * At exactly the start minute we schedule tomorrow, because "now" means
+     * the alarm for today has already fired.
      */
     fun nextTriggerMillis(nowMillis: Long, zone: ZoneId, morningStartMinute: Int): Long {
         val now = LocalDateTime.ofInstant(Instant.ofEpochMilli(nowMillis), zone)
@@ -38,34 +38,46 @@ class MorningAlarmScheduler @Inject constructor(
 ) {
     private val alarmManager: AlarmManager = context.getSystemService(AlarmManager::class.java)
 
-    private fun pendingIntent(): PendingIntent = PendingIntent.getBroadcast(
+    private fun pendingIntent(kind: String, requestCode: Int): PendingIntent = PendingIntent.getBroadcast(
         context,
-        REQUEST_CODE,
-        Intent(context, MorningAlarmReceiver::class.java),
+        requestCode,
+        Intent(context, MorningAlarmReceiver::class.java).putExtra(MorningAlarmReceiver.EXTRA_KIND, kind),
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
     )
 
+    /** Arms the morning alarm, and the evening one when the evening sit is on. */
     fun schedule(settings: AnchorSettings) {
+        arm(settings.morningStartMinute, MorningAlarmReceiver.KIND_MORNING, MORNING_REQUEST_CODE)
+        if (settings.eveningSitRequired || settings.eveningPromptOnItsOwn) {
+            arm(settings.eveningStartMinute, MorningAlarmReceiver.KIND_EVENING, EVENING_REQUEST_CODE)
+        } else {
+            alarmManager.cancel(pendingIntent(MorningAlarmReceiver.KIND_EVENING, EVENING_REQUEST_CODE))
+        }
+    }
+
+    private fun arm(startMinute: Int, kind: String, requestCode: Int) {
         val triggerAt = NextMorningAlarm.nextTriggerMillis(
             nowMillis = clock.millis(),
             zone = clock.zone,
-            morningStartMinute = settings.morningStartMinute,
+            morningStartMinute = startMinute,
         )
         // setAlarmClock survives Doze, which setExactAndAllowWhileIdle does
         // not reliably do on all OEM builds.
         runCatching {
             alarmManager.setAlarmClock(
-                AlarmManager.AlarmClockInfo(triggerAt, pendingIntent()),
-                pendingIntent(),
+                AlarmManager.AlarmClockInfo(triggerAt, pendingIntent(kind, requestCode)),
+                pendingIntent(kind, requestCode),
             )
         }
     }
 
     fun cancel() {
-        alarmManager.cancel(pendingIntent())
+        alarmManager.cancel(pendingIntent(MorningAlarmReceiver.KIND_MORNING, MORNING_REQUEST_CODE))
+        alarmManager.cancel(pendingIntent(MorningAlarmReceiver.KIND_EVENING, EVENING_REQUEST_CODE))
     }
 
     private companion object {
-        const val REQUEST_CODE = 4201
+        const val MORNING_REQUEST_CODE = 4201
+        const val EVENING_REQUEST_CODE = 4202
     }
 }

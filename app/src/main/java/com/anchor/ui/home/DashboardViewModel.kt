@@ -7,33 +7,53 @@ import com.anchor.data.db.DailyLogDao
 import com.anchor.data.ha.KillSwitch
 import com.anchor.data.ha.OverrideStatus
 import com.anchor.data.settings.AnchorSettings
+import com.anchor.data.settings.EnforcementMode
 import com.anchor.data.settings.SettingsRepository
-import com.anchor.data.usage.AppLimitDao
+import com.anchor.data.usage.AppLimit
 import com.anchor.data.usage.MeditationSessionDao
 import com.anchor.domain.AnchorDate
+import com.anchor.domain.EveningSit
 import com.anchor.domain.LimitGate
+import com.anchor.domain.LimitStatus
+import com.anchor.domain.LimitUsage
+import com.anchor.domain.Streak
+import com.anchor.ui.settings.sections.formatMinute
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.time.LocalDate
 import java.time.format.TextStyle
 import java.util.Locale
 
+/** One member of a group, in the row's breakdown. */
+data class MemberUsage(val label: String, val usedMinutes: Int, val opens: Int)
+
+/** One limit's day, on the dashboard. A group shows as one row. */
 data class UsageRow(
-    val packageName: String,
     val label: String,
     val usedMinutes: Int,
     val limitMinutes: Int?,
     val opens: Int,
     val limitOpens: Int?,
-    /** Opens weighted for limits (an early-lock return costs half). */
+    /** Opens as charged against the budget. */
     val openUnits: Double = opens.toDouble(),
+    /** Waived for the rest of the day by the streak-mode door. */
+    val bypassed: Boolean = false,
+    /** Where the limit stands right now: in session, spent, cooling down. */
+    val status: LimitStatus = LimitStatus.Available,
+    val sessionMinutes: Int? = null,
+    val cooldownMinutes: Int? = null,
+    /** Each app's share; empty for a limit on a single app. */
+    val members: List<MemberUsage> = emptyList(),
 ) {
-    /** Progress through the time budget, or null when there is none. */
-    val timeFraction: Float?
+    /** Progress through the enforced budget, or null when there is none. */
+    val fraction: Float?
         get() = limitMinutes?.let { limit ->
             if (limit <= 0) 1f else (usedMinutes.toFloat() / limit).coerceIn(0f, 1f)
+        } ?: limitOpens?.let { limit ->
+            if (limit <= 0) 1f else (openUnits.toFloat() / limit).coerceIn(0f, 1f)
         }
 
     val isExhausted: Boolean
@@ -60,7 +80,11 @@ data class DashboardUiState(
     val settings: AnchorSettings = AnchorSettings(),
     val meditationSecondsToday: Int = 0,
     val meditationCountToday: Int = 0,
-)
+    /** Days within limits; null when streak mode is off. */
+    val streakDays: Int? = null,
+) {
+    val eveningSitDone: Boolean get() = EveningSit.isSatisfied(settings, meditationSecondsToday)
+}
 
 class DashboardViewModel(
     private val dailyLogDao: DailyLogDao,
@@ -68,7 +92,6 @@ class DashboardViewModel(
     private val killSwitch: KillSwitch,
     private val settingsRepository: SettingsRepository,
     private val limitGate: LimitGate,
-    private val appLimitDao: AppLimitDao,
     private val meditationDao: MeditationSessionDao,
     private val appLabels: suspend () -> Map<String, String>,
     private val readPermissions: (exportTreeUri: String?) -> PermissionState,
@@ -79,28 +102,15 @@ class DashboardViewModel(
 
     init { refresh() }
 
+    /** Everything, including the Home Assistant round trip and permissions. */
     fun refresh() {
         viewModelScope.launch {
-            val settings = settingsRepository.current()
             val today = anchorDate.today()
+            val usageDay = anchorDate.usageDay(settingsRepository.current().dayResetMinute)
+            settingsRepository.ensureStreakStarted(usageDay)
+            val settings = settingsRepository.current()
             val recent = dailyLogDao.recent(limit = 14).associateBy { it.date }
-
-            val dayStart = anchorDate.usageDayStartMillis(settings.dayResetMinute)
-            val labels = appLabels()
-            val usage = appLimitDao.all()
-                .filter { it.enabled && it.hasAnyLimit }
-                .map { limit ->
-                    val summary = limitGate.summaryFor(limit.packageName)
-                    UsageRow(
-                        packageName = limit.packageName,
-                        label = labels[limit.packageName] ?: limit.packageName,
-                        usedMinutes = (summary.foregroundMillis / 60_000L).toInt(),
-                        limitMinutes = limit.dailyMinutes,
-                        opens = summary.opens,
-                        openUnits = summary.openUnits,
-                        limitOpens = limit.dailyOpens,
-                    )
-                }
+            val live = liveState(settings, usageDay)
 
             _state.value = DashboardUiState(
                 loaded = true,
@@ -108,12 +118,88 @@ class DashboardViewModel(
                 week = weekEnding(today, recent),
                 overrideStatus = if (settings.killSwitchEnabled) killSwitch.check(settings) else OverrideStatus.INACTIVE,
                 permissions = readPermissions(settings.exportTreeUri),
-                usage = usage,
+                usage = live.usage,
                 settings = settings,
-                meditationSecondsToday = meditationDao.secondsSince(dayStart),
-                meditationCountToday = meditationDao.countSince(dayStart),
+                meditationSecondsToday = live.meditationSeconds,
+                meditationCountToday = live.meditationCount,
+                streakDays = live.streakDays,
             )
         }
+    }
+
+    /**
+     * Only what changes while the phone is in use: usage, breathing and the
+     * streak. No network, no permission reads, so it is cheap enough to run
+     * every few seconds while the dashboard is in front.
+     */
+    fun tick() {
+        viewModelScope.launch {
+            if (!_state.value.loaded) return@launch
+            val settings = settingsRepository.current()
+            val live = liveState(settings, anchorDate.usageDay(settings.dayResetMinute))
+            _state.update {
+                it.copy(
+                    usage = live.usage,
+                    meditationSecondsToday = live.meditationSeconds,
+                    meditationCountToday = live.meditationCount,
+                    streakDays = live.streakDays,
+                )
+            }
+        }
+    }
+
+    private class Live(
+        val usage: List<UsageRow>,
+        val meditationSeconds: Int,
+        val meditationCount: Int,
+        val streakDays: Int?,
+    )
+
+    private suspend fun liveState(settings: AnchorSettings, usageDay: String): Live {
+        val dayStart = anchorDate.usageDayStartMillis(settings.dayResetMinute)
+        val labels = appLabels()
+        return Live(
+            usage = limitGate.dashboardUsage().map { row(it, labels, settings, usageDay) },
+            meditationSeconds = meditationDao.secondsSince(dayStart),
+            meditationCount = meditationDao.countSince(dayStart),
+            streakDays = if (settings.enforcementMode == EnforcementMode.STREAK) {
+                Streak.count(settings.streakStartDay, usageDay)
+            } else null,
+        )
+    }
+
+    private fun row(usage: LimitUsage, labels: Map<String, String>, settings: AnchorSettings, usageDay: String): UsageRow {
+        val limit = usage.limit
+        val summary = usage.summary
+        return UsageRow(
+            label = displayName(limit, labels),
+            usedMinutes = (summary.foregroundMillis / 60_000L).toInt(),
+            limitMinutes = limit.effectiveDailyMinutes,
+            opens = summary.opens,
+            openUnits = summary.openUnits,
+            limitOpens = limit.effectiveDailyOpens,
+            bypassed = Streak.isBypassed(settings.limitBypasses, limit.subject, usageDay),
+            status = usage.status,
+            sessionMinutes = limit.sessionMinutes,
+            cooldownMinutes = limit.cooldownMinutes,
+            members = if (limit.packages.size <= 1) emptyList() else usage.perApp.map { (pkg, own) ->
+                MemberUsage(
+                    label = labels[pkg] ?: pkg,
+                    usedMinutes = (own.foregroundMillis / 60_000L).toInt(),
+                    opens = own.opens,
+                )
+            }.sortedWith(compareByDescending<MemberUsage> { it.usedMinutes }.thenBy { it.label.lowercase() }),
+        )
+    }
+
+    private fun displayName(limit: AppLimit, labels: Map<String, String>): String {
+        val base = limit.name.trim().takeIf { it.isNotEmpty() } ?: run {
+            val names = limit.packages.map { labels[it] ?: it }.sortedBy { it.lowercase() }
+            if (names.size <= 2) names.joinToString(" & ") else "${names[0]}, ${names[1]} +${names.size - 2}"
+        }
+        val start = limit.windowStartMinute
+        val end = limit.windowEndMinute
+        return if (start != null && end != null) "$base, ${formatMinute(start)}–${formatMinute(end)}" else base
     }
 
     private fun weekEnding(today: String, logs: Map<String, DailyLog>): List<DayMark> {

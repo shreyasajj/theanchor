@@ -63,6 +63,46 @@ class PauseLedgerTest {
         assertThat(PauseLedger.consumeAbandonment(app)).isFalse()
     }
 
+    // --- An unfinished pause blocks a session rejoin ---
+
+    @Test
+    fun `an app with no pause has nothing unfinished`() {
+        assertThat(PauseLedger.hasUnfinishedPause(app)).isFalse()
+    }
+
+    @Test
+    fun `showing a pause leaves it unfinished`() {
+        PauseLedger.begin(app)
+        assertThat(PauseLedger.hasUnfinishedPause(app)).isTrue()
+    }
+
+    @Test
+    fun `walking away leaves the pause still owed`() {
+        PauseLedger.begin(app)
+        PauseLedger.abandon(app)
+        assertThat(PauseLedger.hasUnfinishedPause(app)).isTrue()
+    }
+
+    @Test
+    fun `sitting through it settles the debt`() {
+        PauseLedger.begin(app)
+        PauseLedger.complete(app, now)
+        assertThat(PauseLedger.hasUnfinishedPause(app)).isFalse()
+    }
+
+    @Test
+    fun `beginning a pause drops any earlier satisfaction`() {
+        PauseLedger.complete(app, now)
+        PauseLedger.begin(app)
+        assertThat(PauseLedger.isSatisfied(app, now + 1_000)).isFalse()
+    }
+
+    @Test
+    fun `a blank package is ignored rather than tracked`() {
+        PauseLedger.begin("")
+        assertThat(PauseLedger.hasUnfinishedPause("")).isFalse()
+    }
+
     @Test
     fun `the ledger is per package`() {
         PauseLedger.complete(app, now)

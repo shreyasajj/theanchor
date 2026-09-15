@@ -113,6 +113,9 @@ fun AppPickerDialog(
     selected: Set<String>,
     onToggle: (String) -> Unit,
     onDismiss: () -> Unit,
+    /** When given, a Cancel button that discards instead of committing. */
+    onCancel: (() -> Unit)? = null,
+    hint: String? = null,
 ) {
     var query by remember { mutableStateOf("") }
     val shown = remember(apps, query) {
@@ -121,10 +124,11 @@ fun AppPickerDialog(
     }
 
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = onCancel ?: onDismiss,
         containerColor = MaterialTheme.colorScheme.surfaceContainer,
         title = { Text(title, style = MaterialTheme.typography.titleLarge) },
         confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
+        dismissButton = onCancel?.let { { TextButton(onClick = it) { Text("Cancel") } } },
         text = {
             Column {
                 OutlinedTextField(
@@ -137,6 +141,7 @@ fun AppPickerDialog(
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Spacer(Modifier.width(0.dp).padding(top = 8.dp))
+                if (hint != null) Hint(hint, Modifier.padding(vertical = 6.dp))
                 if (apps.isEmpty()) {
                     Hint("Loading installed apps…", Modifier.padding(vertical = 16.dp))
                 }

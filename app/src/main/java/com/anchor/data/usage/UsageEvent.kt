@@ -13,28 +13,38 @@ data class UsageEvent(
 }
 
 /**
- * What the app did within a usage-day window.
+ * What a limit's apps did within a usage-day window.
  *
  * An "open" is a run of one or more foreground sessions that belong
- * together: a quick re-entry (under a minute) or, when the app has a session
- * cap, any return while that cap's window is still running.
+ * together: a quick re-entry (under a minute) or, when the limit has a
+ * session length, any return while that session still has foreground time
+ * left and the apps were left for less than the session length.
  *
  * @param foregroundMillis time in the foreground within the window
  * @param opens whole opens within the window, ignoring weights
- * @param openUnits opens weighted for limits: the first open after a
- *   voluntary early lock costs half
+ * @param openUnits opens as charged against the budget; today every open
+ *   costs one, so this equals [opens]
+ * @param lastOpenUnits what the most recent open cost, so a running open can
+ *   be discounted when deciding whether a launch is over budget
  * @param lastForegroundEndAtMillis end of the most recent *completed*
  *   session, considering events before the window too: a cooldown is a
  *   rolling gap and must survive the daily reset
- * @param currentSessionStartAtMillis non-null when the app is foreground now
+ * @param currentSessionStartAtMillis non-null when an app is foreground now
  * @param lastOpenStartAtMillis when the most recent open began, whether or
  *   not it is still running; what a return would rejoin
+ * @param lastOpenEndAtMillis when the most recent open was last left, or
+ *   null while it is running
+ * @param currentOpenForegroundMillis foreground time inside the most recent
+ *   open, up to now; the session clock
  */
 data class AppUsageSummary(
     val foregroundMillis: Long = 0,
     val opens: Int = 0,
     val openUnits: Double = 0.0,
+    val lastOpenUnits: Double = 0.0,
     val lastForegroundEndAtMillis: Long? = null,
     val currentSessionStartAtMillis: Long? = null,
     val lastOpenStartAtMillis: Long? = null,
+    val lastOpenEndAtMillis: Long? = null,
+    val currentOpenForegroundMillis: Long = 0,
 )

@@ -48,7 +48,11 @@ class SettingsViewModel(
             val before = settingsRepository.current()
             val after = transform(before)
             settingsRepository.update { after }
-            if (after.morningStartMinute != before.morningStartMinute) {
+            if (after.morningStartMinute != before.morningStartMinute ||
+                after.eveningStartMinute != before.eveningStartMinute ||
+                after.eveningSitRequired != before.eveningSitRequired ||
+                after.eveningPromptOnItsOwn != before.eveningPromptOnItsOwn
+            ) {
                 onScheduleChanged()
             }
         }
@@ -125,7 +129,10 @@ class SettingsViewModel(
 
     // --- Usage limits ---
 
-    /** Creates the row on first use, so the UI never has to. */
+    /**
+     * Edits the limit covering [packageName], creating a single-app limit on
+     * first use so the UI never has to.
+     */
     fun setLimit(packageName: String, transform: (AppLimit) -> AppLimit) {
         viewModelScope.launch {
             val existing = appLimitDao.find(packageName) ?: AppLimit(packageName)
@@ -133,7 +140,55 @@ class SettingsViewModel(
         }
     }
 
+    /** Edits an existing limit by id. */
+    fun updateLimit(id: Long, transform: (AppLimit) -> AppLimit) {
+        viewModelScope.launch {
+            val existing = appLimitDao.findById(id) ?: return@launch
+            appLimitDao.upsert(transform(existing))
+        }
+    }
+
+    /**
+     * A new limit for [packages]. Any of them already in another limit is
+     * moved here, since an app can only be counted once; a limit left with
+     * no apps is removed.
+     */
+    fun createLimit(packages: Set<String>, name: String = "") {
+        if (packages.isEmpty()) return
+        viewModelScope.launch {
+            removeFromOtherLimits(packages, exceptId = null)
+            appLimitDao.upsert(AppLimit(name = name, packages = packages))
+        }
+    }
+
+    /** Replaces a limit's members, moving any that belonged elsewhere. */
+    fun setLimitPackages(id: Long, packages: Set<String>) {
+        viewModelScope.launch {
+            val existing = appLimitDao.findById(id) ?: return@launch
+            if (packages.isEmpty()) {
+                appLimitDao.deleteById(id)
+                return@launch
+            }
+            removeFromOtherLimits(packages, exceptId = id)
+            appLimitDao.upsert(existing.copy(packages = packages))
+        }
+    }
+
+    private suspend fun removeFromOtherLimits(packages: Set<String>, exceptId: Long?) {
+        appLimitDao.all()
+            .filter { it.id != exceptId && it.packages.any { p -> p in packages } }
+            .forEach { other ->
+                val remaining = other.packages - packages
+                if (remaining.isEmpty()) appLimitDao.deleteById(other.id)
+                else appLimitDao.upsert(other.copy(packages = remaining))
+            }
+    }
+
     fun clearLimit(packageName: String) {
         viewModelScope.launch { appLimitDao.delete(packageName) }
+    }
+
+    fun deleteLimit(id: Long) {
+        viewModelScope.launch { appLimitDao.deleteById(id) }
     }
 }

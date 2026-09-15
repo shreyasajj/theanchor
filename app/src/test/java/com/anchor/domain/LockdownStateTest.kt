@@ -12,11 +12,12 @@ class LockdownStateTest {
     @Test
     fun `starts inactive`() {
         assertThat(LockdownState.active).isFalse()
+        assertThat(LockdownState.kind).isNull()
     }
 
     @Test
     fun `begin activates and end deactivates`() {
-        LockdownState.begin()
+        LockdownState.begin(LockKind.MORNING)
         assertThat(LockdownState.active).isTrue()
         LockdownState.end()
         assertThat(LockdownState.active).isFalse()
@@ -24,17 +25,17 @@ class LockdownStateTest {
 
     @Test
     fun `begin is idempotent`() {
-        LockdownState.begin()
-        LockdownState.begin()
+        LockdownState.begin(LockKind.MORNING)
+        LockdownState.begin(LockKind.MORNING)
         LockdownState.end()
         assertThat(LockdownState.active).isFalse()
     }
 
     @Test
-    fun `the flow reflects the current value`() {
-        LockdownState.begin()
-        assertThat(LockdownState.activeFlow.value).isTrue()
+    fun `the flow reflects which lock is up`() {
+        LockdownState.begin(LockKind.EVENING_SIT)
+        assertThat(LockdownState.kindFlow.value).isEqualTo(LockKind.EVENING_SIT)
         LockdownState.end()
-        assertThat(LockdownState.activeFlow.value).isFalse()
+        assertThat(LockdownState.kindFlow.value).isNull()
     }
 }

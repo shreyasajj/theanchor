@@ -18,6 +18,7 @@ class AppLimitDaoTest {
     private lateinit var dao: AppLimitDao
 
     private val youtube = "com.google.android.youtube"
+    private val instagram = "com.instagram.android"
 
     @Before
     fun setUp() {
@@ -40,7 +41,9 @@ class AppLimitDaoTest {
     fun `stores and reads back every field`() = runTest {
         dao.upsert(
             AppLimit(
-                packageName = youtube,
+                name = "Social",
+                packages = setOf(youtube, instagram),
+                limitMode = LimitMode.TIME,
                 dailyMinutes = 30,
                 dailyOpens = 5,
                 cooldownMinutes = 20,
@@ -50,6 +53,9 @@ class AppLimitDaoTest {
         )
 
         val found = dao.find(youtube)!!
+        assertThat(found.name).isEqualTo("Social")
+        assertThat(found.packages).containsExactly(youtube, instagram)
+        assertThat(found.limitMode).isEqualTo(LimitMode.TIME)
         assertThat(found.dailyMinutes).isEqualTo(30)
         assertThat(found.dailyOpens).isEqualTo(5)
         assertThat(found.cooldownMinutes).isEqualTo(20)
@@ -74,7 +80,7 @@ class AppLimitDaoTest {
     @Test
     fun `hasAnyLimit is true when any single mechanic is set`() {
         val base = AppLimit(packageName = youtube)
-        assertThat(base.copy(dailyMinutes = 30).hasAnyLimit).isTrue()
+        assertThat(base.copy(limitMode = LimitMode.TIME, dailyMinutes = 30).hasAnyLimit).isTrue()
         assertThat(base.copy(dailyOpens = 5).hasAnyLimit).isTrue()
         assertThat(base.copy(cooldownMinutes = 20).hasAnyLimit).isTrue()
         assertThat(base.copy(sessionMinutes = 10).hasAnyLimit).isTrue()
@@ -82,26 +88,44 @@ class AppLimitDaoTest {
     }
 
     @Test
-    fun `upserting the same package replaces rather than duplicating`() = runTest {
-        dao.upsert(AppLimit(packageName = youtube, dailyMinutes = 30))
-        dao.upsert(AppLimit(packageName = youtube, dailyMinutes = 15))
+    fun `only the budget for the chosen mode counts as a limit`() {
+        val base = AppLimit(packageName = youtube)
+        assertThat(base.copy(limitMode = LimitMode.OPENS, dailyMinutes = 30).hasAnyLimit).isFalse()
+        assertThat(base.copy(limitMode = LimitMode.TIME, dailyOpens = 5).hasAnyLimit).isFalse()
+        assertThat(base.copy(limitMode = LimitMode.OPENS, dailyOpens = 5).effectiveDailyOpens).isEqualTo(5)
+        assertThat(base.copy(limitMode = LimitMode.TIME, dailyOpens = 5).effectiveDailyOpens).isNull()
+    }
+
+    @Test
+    fun `upserting with the same id replaces rather than duplicating`() = runTest {
+        val id = dao.upsert(AppLimit(packageName = youtube, dailyOpens = 3))
+        dao.upsert(AppLimit(packageName = youtube, dailyOpens = 1).copy(id = id))
 
         assertThat(dao.all()).hasSize(1)
-        assertThat(dao.find(youtube)!!.dailyMinutes).isEqualTo(15)
+        assertThat(dao.find(youtube)!!.dailyOpens).isEqualTo(1)
     }
 
     @Test
-    fun `deleting removes the row`() = runTest {
-        dao.upsert(AppLimit(packageName = youtube, dailyMinutes = 30))
+    fun `deleting by package removes the whole group`() = runTest {
+        dao.upsert(AppLimit(packages = setOf(youtube, instagram), dailyOpens = 3))
         dao.delete(youtube)
         assertThat(dao.find(youtube)).isNull()
+        assertThat(dao.find(instagram)).isNull()
     }
 
     @Test
-    fun `all returns every configured app`() = runTest {
-        dao.upsert(AppLimit(packageName = youtube, dailyMinutes = 30))
-        dao.upsert(AppLimit(packageName = "com.instagram.android", dailyOpens = 3))
+    fun `find locates the group by any member`() = runTest {
+        val id = dao.upsert(AppLimit(name = "Social", packages = setOf(youtube, instagram), dailyOpens = 3))
+        assertThat(dao.find(instagram)!!.id).isEqualTo(id)
+        assertThat(dao.find(youtube)!!.subject).isEqualTo("limit:$id")
+        assertThat(dao.find("com.other")).isNull()
+    }
 
-        assertThat(dao.all().map { it.packageName }).containsExactly(youtube, "com.instagram.android")
+    @Test
+    fun `all returns every configured limit`() = runTest {
+        dao.upsert(AppLimit(packageName = youtube, dailyOpens = 3))
+        dao.upsert(AppLimit(packageName = instagram, dailyOpens = 3))
+
+        assertThat(dao.all().flatMap { it.packages }).containsExactly(youtube, instagram)
     }
 }

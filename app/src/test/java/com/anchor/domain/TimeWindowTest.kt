@@ -7,6 +7,30 @@ class TimeWindowTest {
 
     private fun at(hour: Int, minute: Int = 0) = hour * 60 + minute
 
+    // --- Overlap, for limits that share an app at different hours ---
+
+    @Test
+    fun `back-to-back windows do not overlap`() {
+        assertThat(TimeWindow.overlaps(at(14), at(17), at(17), at(21))).isFalse()
+    }
+
+    @Test
+    fun `windows sharing a minute overlap`() {
+        assertThat(TimeWindow.overlaps(at(14), at(17), at(16), at(21))).isTrue()
+    }
+
+    @Test
+    fun `a wrapping window overlaps across midnight`() {
+        assertThat(TimeWindow.overlaps(at(22), at(2), at(1), at(3))).isTrue()
+        assertThat(TimeWindow.overlaps(at(22), at(2), at(3), at(5))).isFalse()
+        assertThat(TimeWindow.overlaps(at(22), at(2), at(21), at(23))).isTrue()
+    }
+
+    @Test
+    fun `a zero-length window overlaps nothing`() {
+        assertThat(TimeWindow.overlaps(at(14), at(14), at(0), at(24))).isFalse()
+    }
+
     // --- Normal (non-wrapping) window: the morning, 05:00–12:00 ---
 
     @Test

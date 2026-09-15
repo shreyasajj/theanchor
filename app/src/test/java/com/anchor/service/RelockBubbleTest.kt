@@ -1,5 +1,6 @@
 package com.anchor.service
 
+import com.anchor.data.usage.LimitMode
 import com.anchor.data.usage.AppLimit
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
@@ -12,7 +13,7 @@ class RelockBubbleTest {
     fun `it shows only for an app with an active limit`() {
         assertThat(RelockButton.shouldShowFor(null)).isFalse()
         assertThat(RelockButton.shouldShowFor(AppLimit("com.x"))).isFalse()
-        assertThat(RelockButton.shouldShowFor(AppLimit("com.x", enabled = false, dailyMinutes = 10))).isFalse()
+        assertThat(RelockButton.shouldShowFor(AppLimit("com.x", enabled = false, limitMode = LimitMode.TIME, dailyMinutes = 10))).isFalse()
         assertThat(RelockButton.shouldShowFor(AppLimit("com.x", sessionMinutes = 10))).isTrue()
     }
 

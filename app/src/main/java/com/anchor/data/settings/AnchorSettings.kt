@@ -5,6 +5,12 @@ import com.anchor.data.export.NoteFormat
 enum class LocationMode { AT_HOME, SPECIFIC_ROOMS }
 
 /**
+ * What a spent limit does. STRICT blocks the app until it resets. STREAK
+ * lets the user through on request, at the cost of the streak.
+ */
+enum class EnforcementMode { STRICT, STREAK }
+
+/**
  * An immutable snapshot of every user-configurable value. Read it once at
  * the moment of a blocking decision and never cache it across decisions,
  * since the kill switch and the schedule can change between them.
@@ -49,6 +55,46 @@ data class AnchorSettings(
      * ending its session early.
      */
     val showRelockBubble: Boolean = true,
+
+    /**
+     * Limits (by [com.anchor.data.usage.AppLimit.subject]) that have been
+     * shown a pause never sat through. Persisted, not held in memory: the
+     * app's process restarts routinely, and an in-memory debt is forgotten,
+     * which let a walked-away-from pause be treated as a session the user
+     * could simply rejoin.
+     */
+    val pausesOwed: Set<String> = emptySet(),
+
+    // --- Streaks ---
+    val enforcementMode: EnforcementMode = EnforcementMode.STRICT,
+
+    /**
+     * The usage day the current streak began, ISO date. Null until the first
+     * dashboard visit. After a break it is set to the following day, so the
+     * day of the break counts for nothing.
+     */
+    val streakStartDay: String? = null,
+
+    /**
+     * Limits the user chose to walk through today, as "subject|usageDay".
+     * A bypass lasts until the next daily reset.
+     */
+    val limitBypasses: Set<String> = emptySet(),
+
+    /**
+     * Ask the evening questions when the window opens and you are in scope,
+     * not only when a blocked app is opened. Otherwise a spent limit can keep
+     * the questions from ever being asked.
+     */
+    val eveningPromptOnItsOwn: Boolean = false,
+
+    // --- Evening sit ---
+    /**
+     * Lock the phone during the evening window, when in scope, until the
+     * day's guided breathing reaches [eveningSitMinutes].
+     */
+    val eveningSitRequired: Boolean = false,
+    val eveningSitMinutes: Int = 5,
 
     // --- Remote kill switch ---
     val killSwitchEnabled: Boolean = false,

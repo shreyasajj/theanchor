@@ -100,4 +100,17 @@ class LimitCopyTest {
     fun `a daily block says when it resets rather than counting minutes`() {
         assertThat(LimitCopy.body(LimitReason.DAILY_TIME, now + 9 * 60 * 60_000L, now)).contains("resets")
     }
+
+    @Test
+    fun `a spent session with no cooldown says a new one may start`() {
+        assertThat(LimitCopy.body(LimitReason.SESSION_CAP, now, now)).contains("new one")
+        assertThat(LimitCopy.body(LimitReason.SESSION_CAP, now + 20 * 60_000L, now)).contains("20 minutes")
+    }
+
+    @Test
+    fun `the streak door names what it costs`() {
+        assertThat(LimitCopy.breakLabel(0)).isEqualTo("Open anyway")
+        assertThat(LimitCopy.breakLabel(1)).contains("1-day streak")
+        assertThat(LimitCopy.breakLabel(7)).contains("7-day streak")
+    }
 }

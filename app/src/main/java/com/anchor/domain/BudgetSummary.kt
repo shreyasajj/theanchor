@@ -18,20 +18,18 @@ object BudgetSummary {
         if (limit == null || !limit.enabled) return emptyList()
 
         return buildList {
-            limit.dailyMinutes?.let { total ->
+            limit.effectiveDailyMinutes?.let { total ->
                 val used = (summary.foregroundMillis / 60_000L).toInt()
                 add("${(total - used).coerceAtLeast(0)} of $total minutes left today")
             }
-            limit.dailyOpens?.let { total ->
+            limit.effectiveDailyOpens?.let { total ->
                 val left = (total - summary.openUnits).coerceAtLeast(0.0)
                 add("${formatOpens(left)} of $total opens left today")
             }
             limit.sessionMinutes?.let { cap ->
-                val start = summary.currentSessionStartAtMillis ?: summary.lastOpenStartAtMillis
-                if (start != null && nowMillis > start) {
-                    val elapsed = ((nowMillis - start) / 60_000L).toInt()
-                    val left = (cap - elapsed).coerceAtLeast(0)
-                    add("$left of $cap minutes left in this session")
+                val remaining = SessionCapMath.remainingMillis(summary, cap, nowMillis)
+                if (remaining < cap * 60_000L) {
+                    add("${(remaining / 60_000L).toInt()} of $cap minutes left in this session")
                 } else {
                     add("$cap minutes per session")
                 }

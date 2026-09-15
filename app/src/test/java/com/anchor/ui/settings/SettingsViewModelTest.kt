@@ -1,5 +1,6 @@
 package com.anchor.ui.settings
 
+import com.anchor.data.usage.LimitMode
 import android.content.Context
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.room.Room
@@ -188,14 +189,14 @@ class SettingsViewModelTest {
 
     @Test
     fun `setting a limit on an app with no row creates one`() = runTest {
-        viewModel().setLimit(youtube) { it.copy(dailyMinutes = 30) }
+        viewModel().setLimit(youtube) { it.copy(limitMode = LimitMode.TIME, dailyMinutes = 30) }
         awaitUntil { db.appLimitDao().find(youtube)?.dailyMinutes == 30 }
     }
 
     @Test
     fun `setting a second mechanic preserves the first`() = runTest {
         val vm = viewModel()
-        vm.setLimit(youtube) { it.copy(dailyMinutes = 30) }
+        vm.setLimit(youtube) { it.copy(limitMode = LimitMode.TIME, dailyMinutes = 30) }
         awaitUntil { db.appLimitDao().find(youtube)?.dailyMinutes == 30 }
         vm.setLimit(youtube) { it.copy(preOpenDelaySeconds = 30) }
         awaitUntil { db.appLimitDao().find(youtube)?.preOpenDelaySeconds == 30 }
@@ -206,7 +207,7 @@ class SettingsViewModelTest {
     @Test
     fun `clearing a limit removes the row entirely`() = runTest {
         val vm = viewModel()
-        vm.setLimit(youtube) { it.copy(dailyMinutes = 30) }
+        vm.setLimit(youtube) { it.copy(limitMode = LimitMode.TIME, dailyMinutes = 30) }
         awaitUntil { db.appLimitDao().find(youtube) != null }
         vm.clearLimit(youtube)
         awaitUntil { db.appLimitDao().find(youtube) == null }
@@ -216,22 +217,103 @@ class SettingsViewModelTest {
     fun `appLimits exposes the configured apps`() = runTest {
         val vm = viewModel()
         vm.setLimit(youtube) { it.copy(dailyOpens = 5) }
-        awaitUntil { vm.appLimits.value.map { it.packageName } == listOf(youtube) }
+        awaitUntil { vm.appLimits.value.flatMap { it.packages } == listOf(youtube) }
+    }
+
+    @Test
+    fun `creating a limit for several apps makes one group`() = runTest {
+        val vm = viewModel()
+        vm.createLimit(setOf(youtube, "com.instagram.android"))
+        awaitUntil { db.appLimitDao().find("com.instagram.android") != null }
+
+        assertThat(db.appLimitDao().all()).hasSize(1)
+        assertThat(db.appLimitDao().find(youtube)!!.id).isEqualTo(db.appLimitDao().find("com.instagram.android")!!.id)
+    }
+
+    @Test
+    fun `an app moved into a new group leaves its old one`() = runTest {
+        val vm = viewModel()
+        vm.setLimit(youtube) { it.copy(dailyOpens = 5) }
+        awaitUntil { db.appLimitDao().find(youtube) != null }
+        val old = db.appLimitDao().find(youtube)!!.id
+
+        vm.createLimit(setOf(youtube, "com.instagram.android"))
+        awaitUntil { db.appLimitDao().find(youtube)?.id != old }
+
+        assertThat(db.appLimitDao().all()).hasSize(1)   // the emptied group is gone
+    }
+
+    @Test
+    fun `emptying a limit's apps removes it`() = runTest {
+        val vm = viewModel()
+        vm.setLimit(youtube) { it.copy(dailyOpens = 5) }
+        awaitUntil { db.appLimitDao().find(youtube) != null }
+        vm.setLimitPackages(db.appLimitDao().find(youtube)!!.id, emptySet())
+        awaitUntil { db.appLimitDao().all().isEmpty() }
+    }
+
+    @Test
+    fun `turning the evening sit on re-arms the alarms`() = runTest {
+        val vm = viewModel()
+        vm.updateSettings { it.copy(eveningSitRequired = true) }
+        awaitUntil { repo.current().eveningSitRequired }
+        assertThat(rescheduleCount).isEqualTo(1)
     }
 
     // --- Summary copy ---
 
     @Test
-    fun `summary lists every configured mechanic`() {
-        val summary = LimitSummary.describe(AppLimit(youtube, dailyMinutes = 30, dailyOpens = 5, preOpenDelaySeconds = 30))
-        assertThat(summary).contains("30 min/day")
-        assertThat(summary).contains("5 opens")
-        assertThat(summary).contains("30s pause")
+    fun `summary lists every configured mechanic, for the chosen mode only`() {
+        val limit = AppLimit(youtube, limitMode = LimitMode.TIME, dailyMinutes = 30, dailyOpens = 5, preOpenDelaySeconds = 30)
+        val byTime = LimitSummary.describe(limit)
+        assertThat(byTime).contains("30 min/day")
+        assertThat(byTime).doesNotContain("5 opens")
+        assertThat(byTime).contains("30s pause")
+
+        val byOpens = LimitSummary.describe(limit.copy(limitMode = LimitMode.OPENS))
+        assertThat(byOpens).contains("5 opens")
+        assertThat(byOpens).doesNotContain("min/day")
+    }
+
+    @Test
+    fun `the picker hides apps limited at an overlapping time`() {
+        val instagram = "com.instagram.android"
+        val apps = listOf(InstalledApp(youtube, "YouTube"), InstalledApp(instagram, "Instagram"))
+        val afternoon = AppLimit(packageName = youtube).copy(id = 1, windowStartMinute = 14 * 60, windowEndMinute = 17 * 60)
+        val evening = AppLimit().copy(id = 2, windowStartMinute = 17 * 60, windowEndMinute = 21 * 60)
+        val allDay = AppLimit().copy(id = 3)
+
+        // A new all-day limit: anything limited is hidden.
+        assertThat(LimitSummary.availableFor(AppLimit(), listOf(afternoon), apps).map { it.packageName })
+            .containsExactly(instagram)
+        // A limit at other hours may take the app.
+        assertThat(LimitSummary.availableFor(evening, listOf(afternoon), apps).map { it.packageName })
+            .containsExactly(youtube, instagram)
+        // An all-day limit clashes with any window.
+        assertThat(LimitSummary.availableFor(allDay, listOf(afternoon), apps).map { it.packageName })
+            .containsExactly(instagram)
+        // A limit always sees its own members.
+        assertThat(LimitSummary.availableFor(afternoon, listOf(afternoon, allDay.copy(packages = setOf(youtube))), apps)
+            .map { it.packageName }).contains(youtube)
+    }
+
+    @Test
+    fun `the summary shows the hours first`() {
+        val limit = AppLimit(youtube, dailyOpens = 2).copy(windowStartMinute = 14 * 60, windowEndMinute = 17 * 60)
+        assertThat(LimitSummary.describe(limit)).isEqualTo("14:00–17:00 · 2 opens")
+    }
+
+    @Test
+    fun `the row title is the name, or the apps`() {
+        val labels = mapOf(youtube to "YouTube", "com.instagram.android" to "Instagram")
+        assertThat(LimitSummary.title(AppLimit(name = "Social", packages = setOf(youtube)), labels)).isEqualTo("Social")
+        assertThat(LimitSummary.title(AppLimit(packages = setOf(youtube, "com.instagram.android")), labels))
+            .isEqualTo("Instagram & YouTube")
     }
 
     @Test
     fun `summary omits unset mechanics`() {
-        assertThat(LimitSummary.describe(AppLimit(youtube, dailyMinutes = 30))).isEqualTo("30 min/day")
+        assertThat(LimitSummary.describe(AppLimit(youtube, limitMode = LimitMode.TIME, dailyMinutes = 30))).isEqualTo("30 min/day")
     }
 
     @Test

@@ -83,6 +83,41 @@ class EveningGateTest {
         assertThat(gate().decide(youtube)).isEqualTo(EveningDecision.Strict)
     }
 
+    // --- The questions on their own ---
+
+    @Test
+    fun `unprompted is off unless the setting is on`() = runTest {
+        assertThat(gate().decideUnprompted()).isEqualTo(EveningDecision.Allow(SkipReason.NOT_IN_SCOPE))
+    }
+
+    @Test
+    fun `unprompted asks in the window, at home, when tonight is not done`() = runTest {
+        val g = gate(settings = configured().copy(eveningPromptOnItsOwn = true))
+        assertThat(g.decideUnprompted()).isEqualTo(EveningDecision.Strict)
+    }
+
+    @Test
+    fun `unprompted respects the window and completion`() = runTest {
+        val on = configured().copy(eveningPromptOnItsOwn = true)
+        assertThat(gate(instant = afternoonInstant, settings = on).decideUnprompted())
+            .isEqualTo(EveningDecision.Allow(SkipReason.OUTSIDE_WINDOW))
+
+        db.dailyLogDao().upsert(DailyLog(date = "2026-09-09", led = "x", eveningCompletedAt = 1L))
+        assertThat(gate(settings = on).decideUnprompted())
+            .isEqualTo(EveningDecision.Allow(SkipReason.ALREADY_COMPLETED))
+    }
+
+    @Test
+    fun `unprompted does not ask when confirmed away, and asks on unknown only with ask-anyway`() = runTest {
+        val on = configured().copy(eveningPromptOnItsOwn = true)
+        assertThat(gate(settings = on, haStates = mapOf("device_tracker.pixel" to state("not_home"))).decideUnprompted())
+            .isEqualTo(EveningDecision.SimpleDelay)
+        assertThat(gate(settings = on, haStates = emptyMap()).decideUnprompted())
+            .isEqualTo(EveningDecision.SimpleDelay)
+        assertThat(gate(settings = on.copy(enforceWithoutHomeAssistant = true), haStates = emptyMap()).decideUnprompted())
+            .isEqualTo(EveningDecision.Strict)
+    }
+
     @Test
     fun `allows an app that is not on the blocked list`() = runTest {
         assertThat(gate().decide("com.android.calculator2"))

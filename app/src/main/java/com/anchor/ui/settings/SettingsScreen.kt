@@ -28,6 +28,7 @@ import androidx.compose.ui.unit.dp
 import com.anchor.data.db.Phase
 import com.anchor.ui.components.Eyebrow
 import com.anchor.ui.settings.sections.AppsSection
+import com.anchor.ui.settings.sections.EveningSection
 import com.anchor.ui.settings.sections.ExportSection
 import com.anchor.ui.settings.sections.HomeAssistantSection
 import com.anchor.ui.settings.sections.LimitsSection
@@ -73,6 +74,7 @@ fun SettingsScreen(
         ) {
             item { Group("Rhythm") }
             item { ScheduleSection(settings, viewModel::updateSettings) }
+            item { EveningSection(settings, viewModel::updateSettings) }
 
             item { Group("Apps") }
             item { AppsSection(
@@ -93,10 +95,12 @@ fun SettingsScreen(
             item { LimitsSection(
                 apps = apps,
                 limits = limits,
-                showRelockBubble = settings.showRelockBubble,
-                onSetRelockBubble = { on -> viewModel.updateSettings { it.copy(showRelockBubble = on) } },
-                onSetLimit = viewModel::setLimit,
-                onClearLimit = viewModel::clearLimit,
+                settings = settings,
+                onChange = viewModel::updateSettings,
+                onUpdateLimit = viewModel::updateLimit,
+                onCreateLimit = { viewModel.createLimit(it) },
+                onSetLimitPackages = viewModel::setLimitPackages,
+                onDeleteLimit = viewModel::deleteLimit,
             ) }
 
             item { Group("Questions") }

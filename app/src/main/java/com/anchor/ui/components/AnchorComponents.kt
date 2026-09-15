@@ -52,6 +52,10 @@ fun Eyebrow(text: String, modifier: Modifier = Modifier, color: Color = Material
 fun AnchorCard(
     modifier: Modifier = Modifier,
     containerColor: Color = MaterialTheme.colorScheme.surfaceContainerLow,
+    // Material only derives a content colour for the roles it knows; the
+    // container roles fall through to whatever LocalContentColor happens to
+    // be, which outside a Surface is black. State it rather than inherit it.
+    contentColor: Color = MaterialTheme.colorScheme.onSurface,
     borderColor: Color = MaterialTheme.colorScheme.outlineVariant,
     contentPadding: PaddingValues = PaddingValues(20.dp),
     content: @Composable ColumnScope.() -> Unit,
@@ -59,6 +63,7 @@ fun AnchorCard(
     Surface(
         modifier = modifier.fillMaxWidth(),
         color = containerColor,
+        contentColor = contentColor,
         shape = MaterialTheme.shapes.large,
         border = BorderStroke(1.dp, borderColor),
     ) {

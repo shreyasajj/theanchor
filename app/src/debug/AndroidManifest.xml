@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Debug-only overlay. The lock, pause, meditation and confirmation screens are
+  not exported in the real app, which means `adb shell am start` cannot reach
+  them. Exporting them in debug builds lets scripts/emulator.sh drive each
+  screen directly and deterministically for screenshots.
+
+  This file is never part of a release build, so the shipped APK keeps every
+  one of these activities private.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application>
+        <activity
+            android:name=".ui.lock.MorningLockActivity"
+            android:exported="true"
+            tools:replace="android:exported" />
+
+        <activity
+            android:name=".ui.lock.EveningSitLockActivity"
+            android:exported="true"
+            tools:replace="android:exported" />
+
+        <activity
+            android:name=".ui.lock.EveningLockActivity"
+            android:exported="true"
+            tools:replace="android:exported" />
+
+        <activity
+            android:name=".ui.lock.PauseActivity"
+            android:exported="true"
+            tools:replace="android:exported" />
+
+        <activity
+            android:name=".ui.lock.LimitBlockedActivity"
+            android:exported="true"
+            tools:replace="android:exported" />
+
+        <activity
+            android:name=".ui.lock.MeditationActivity"
+            android:exported="true"
+            tools:replace="android:exported" />
+
+        <activity
+            android:name=".ui.lock.ConfirmLockActivity"
+            android:exported="true"
+            tools:replace="android:exported" />
+    </application>
+</manifest>

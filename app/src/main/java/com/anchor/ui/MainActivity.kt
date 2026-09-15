@@ -13,12 +13,16 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.delay
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -46,6 +50,9 @@ import com.anchor.ui.theme.AnchorTheme
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+
+/** How often the dashboard re-reads usage while it is in front. */
+private const val DASHBOARD_TICK_MILLIS = 5_000L
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -88,7 +95,6 @@ class MainActivity : ComponentActivity() {
                     killSwitch = killSwitch,
                     settingsRepository = settingsRepository,
                     limitGate = limitGate,
-                    appLimitDao = appLimitDao,
                     meditationDao = meditationDao,
                     appLabels = { installedApps.launchableApps().associate { it.packageName to it.label } },
                     readPermissions = { treeUri -> readPermissions(treeUri) },
@@ -123,7 +129,18 @@ class MainActivity : ComponentActivity() {
                 NavHost(navController = navController, startDestination = "dashboard") {
                     composable("dashboard") {
                         val state by dashboardViewModel.state.collectAsState()
-                        LaunchedEffect(Unit) { dashboardViewModel.refresh() }
+                        // Refresh on every return to the foreground, then keep
+                        // the usage figures current while the screen is up.
+                        val lifecycle = LocalLifecycleOwner.current.lifecycle
+                        LaunchedEffect(lifecycle) {
+                            lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                                dashboardViewModel.refresh()
+                                while (true) {
+                                    delay(DASHBOARD_TICK_MILLIS)
+                                    dashboardViewModel.tick()
+                                }
+                            }
+                        }
                         DashboardScreen(
                             state = state,
                             onOpenSettings = { navController.navigate("settings") },
