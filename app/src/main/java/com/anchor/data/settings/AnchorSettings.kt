@@ -1,8 +1,18 @@
 package com.anchor.data.settings
 
 import com.anchor.data.export.NoteFormat
+import com.anchor.data.location.SavedPlace
 
 enum class LocationMode { AT_HOME, SPECIFIC_ROOMS }
+
+/** Where presence comes from when vacation mode is not deciding it. */
+enum class LocationSource { HOME_ASSISTANT, PHONE }
+
+/** Which reading actually decides presence right now (spec §1.1). */
+enum class PresenceSource { HOME_ASSISTANT, PHONE_HOME, VACATION }
+
+/** What "At Home" mode has always meant; also what an emptied list falls back to. */
+val DEFAULT_HOME_STATES: List<String> = listOf("home")
 
 /**
  * What a spent limit does. STRICT blocks the app until it resets. STREAK
@@ -42,11 +52,28 @@ data class AnchorSettings(
     val eveningLocationMode: LocationMode = LocationMode.AT_HOME,
     val eveningAllowedRooms: List<String> = emptyList(),
 
+    /** Entity states that count as in scope in AT_HOME mode, matched case-insensitively. */
+    val morningHomeStates: List<String> = DEFAULT_HOME_STATES,
+    val eveningHomeStates: List<String> = DEFAULT_HOME_STATES,
+
+    // --- Phone location ---
+    val locationSource: LocationSource = LocationSource.HOME_ASSISTANT,
+    /** The geofence used when [locationSource] is PHONE. */
+    val homePlace: SavedPlace? = null,
     /**
-     * When Home Assistant cannot say where you are (not configured, or
-     * unreachable), still ask the questions. Off by default, which is the
-     * fail-open behaviour: no answer from HA means no lock and a 5s pause.
-     * A confirmed "not home" reading always skips, whatever this says.
+     * While on with a [vacationPlace], the phone's location against that
+     * place decides presence and Home Assistant is not asked. On without a
+     * place changes nothing.
+     */
+    val vacationMode: Boolean = false,
+    val vacationPlace: SavedPlace? = null,
+
+    /**
+     * When the location cannot be read (Home Assistant not configured or
+     * unreachable, or no usable phone fix), still ask the questions. Off by
+     * default, which is the fail-open behaviour: no reading means no lock and
+     * a 5s pause. A confirmed "away" reading always skips, whatever this says.
+     * The name predates the phone source and is kept for the stored key.
      */
     val enforceWithoutHomeAssistant: Boolean = false,
 
@@ -119,6 +146,17 @@ data class AnchorSettings(
     val homeAssistantConfigured: Boolean
         get() = haBaseUrl.isNotBlank() && haToken.isNotBlank() &&
             haDeviceTrackerEntityId.isNotBlank()
+
+    val presenceSource: PresenceSource
+        get() = when {
+            vacationMode && vacationPlace != null -> PresenceSource.VACATION
+            locationSource == LocationSource.PHONE -> PresenceSource.PHONE_HOME
+            else -> PresenceSource.HOME_ASSISTANT
+        }
+
+    /** The current setup reads the phone's location, so it needs the permission. */
+    val usesPhoneLocation: Boolean
+        get() = locationSource == LocationSource.PHONE || vacationMode
 }
 
 /** Splits a comma-separated room list, trimming and dropping blanks. */
