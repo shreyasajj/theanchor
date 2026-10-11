@@ -1,5 +1,6 @@
 package com.anchor.data.ha
 
+import com.anchor.data.settings.DEFAULT_HOME_STATES
 import com.anchor.data.settings.LocationMode
 
 /**
@@ -21,6 +22,7 @@ object LocationGate {
         result: HaResult,
         mode: LocationMode,
         allowedRooms: List<String>,
+        homeStates: List<String> = DEFAULT_HOME_STATES,
     ): Presence {
         val state = when (result) {
             is HaResult.Unavailable -> return Presence.UNKNOWN
@@ -29,9 +31,15 @@ object LocationGate {
         if (state.state.lowercase() in UNKNOWN_STATES) return Presence.UNKNOWN
 
         return when (mode) {
-            LocationMode.AT_HOME ->
-                if (state.state.equals("home", ignoreCase = true)) Presence.IN_SCOPE
+            LocationMode.AT_HOME -> {
+                // An emptied list means "home", never "nothing matches":
+                // clearing the field must not quietly switch the gate off.
+                val wanted = homeStates.map { it.trim() }.filter { it.isNotEmpty() }
+                    .ifEmpty { DEFAULT_HOME_STATES }
+                val current = state.state.trim()
+                if (wanted.any { it.equals(current, ignoreCase = true) }) Presence.IN_SCOPE
                 else Presence.OUT_OF_SCOPE
+            }
 
             LocationMode.SPECIFIC_ROOMS -> {
                 // The room usually appears in friendly_name (e.g. a per-room

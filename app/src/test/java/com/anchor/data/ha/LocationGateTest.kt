@@ -55,6 +55,71 @@ class LocationGateTest {
             .isEqualTo(Presence.UNKNOWN)
     }
 
+    // --- AT_HOME with a state list ---
+
+    @Test
+    fun `any listed state is in scope`() {
+        val states = listOf("home", "Bedroom", "Office")
+        assertThat(LocationGate.evaluate(ok("Office"), LocationMode.AT_HOME, emptyList(), states))
+            .isEqualTo(Presence.IN_SCOPE)
+        assertThat(LocationGate.evaluate(ok("home"), LocationMode.AT_HOME, emptyList(), states))
+            .isEqualTo(Presence.IN_SCOPE)
+    }
+
+    @Test
+    fun `an unlisted state is out of scope`() {
+        assertThat(LocationGate.evaluate(ok("Kitchen"), LocationMode.AT_HOME, emptyList(), listOf("Bedroom")))
+            .isEqualTo(Presence.OUT_OF_SCOPE)
+    }
+
+    @Test
+    fun `listing states replaces home rather than adding to it`() {
+        assertThat(LocationGate.evaluate(ok("home"), LocationMode.AT_HOME, emptyList(), listOf("Bedroom")))
+            .isEqualTo(Presence.OUT_OF_SCOPE)
+    }
+
+    @Test
+    fun `state matching ignores case and surrounding spaces`() {
+        assertThat(LocationGate.evaluate(ok(" bedroom "), LocationMode.AT_HOME, emptyList(), listOf("  BEDROOM")))
+            .isEqualTo(Presence.IN_SCOPE)
+    }
+
+    @Test
+    fun `state matching is exact, not a substring`() {
+        assertThat(LocationGate.evaluate(ok("Bedroom 2"), LocationMode.AT_HOME, emptyList(), listOf("Bedroom")))
+            .isEqualTo(Presence.OUT_OF_SCOPE)
+    }
+
+    @Test
+    fun `an emptied or blank list still means home`() {
+        assertThat(LocationGate.evaluate(ok("home"), LocationMode.AT_HOME, emptyList(), emptyList()))
+            .isEqualTo(Presence.IN_SCOPE)
+        assertThat(LocationGate.evaluate(ok("home"), LocationMode.AT_HOME, emptyList(), listOf(" ", "")))
+            .isEqualTo(Presence.IN_SCOPE)
+        assertThat(LocationGate.evaluate(ok("not_home"), LocationMode.AT_HOME, emptyList(), emptyList()))
+            .isEqualTo(Presence.OUT_OF_SCOPE)
+    }
+
+    @Test
+    fun `HA's don't-know states stay UNKNOWN even when listed`() {
+        val states = listOf("unknown", "unavailable")
+        assertThat(LocationGate.evaluate(ok("unknown"), LocationMode.AT_HOME, emptyList(), states))
+            .isEqualTo(Presence.UNKNOWN)
+        assertThat(LocationGate.evaluate(ok("unavailable"), LocationMode.AT_HOME, emptyList(), states))
+            .isEqualTo(Presence.UNKNOWN)
+    }
+
+    @Test
+    fun `specific rooms mode ignores the state list`() {
+        val result = LocationGate.evaluate(
+            ok("home", "Kitchen Sensor"),
+            LocationMode.SPECIFIC_ROOMS,
+            listOf("Bedroom"),
+            listOf("home"),
+        )
+        assertThat(result).isEqualTo(Presence.OUT_OF_SCOPE)
+    }
+
     // --- SPECIFIC_ROOMS mode ---
 
     @Test
