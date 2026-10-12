@@ -6,27 +6,38 @@ import com.anchor.data.db.CustomQuestion
 import com.anchor.data.db.CustomQuestionDao
 import com.anchor.data.db.Phase
 import com.anchor.data.db.SlotKey
+import com.anchor.data.location.PhoneFix
+import com.anchor.data.location.PhonePresence
+import com.anchor.data.location.SavedPlace
 import com.anchor.data.settings.AnchorSettings
 import com.anchor.data.settings.LocationMode
 import com.anchor.data.settings.SettingsRepository
 import com.anchor.data.settings.parseRoomList
 import com.anchor.data.usage.AppLimit
 import com.anchor.data.usage.AppLimitDao
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+
+/** Which saved place a "Use current location" or radius edit is for. */
+enum class PlaceTarget { HOME, VACATION }
 
 /**
  * @param onScheduleChanged invoked when a change requires re-arming the
  *   morning alarm. Passed as a lambda so the ViewModel stays Android-free
  *   and unit-testable.
+ * @param currentFix reads the phone's location for "Use current location";
+ *   a lambda for the same reason as [onScheduleChanged].
  */
 class SettingsViewModel(
     private val settingsRepository: SettingsRepository,
     private val questionDao: CustomQuestionDao,
     private val appLimitDao: AppLimitDao,
     private val onScheduleChanged: () -> Unit,
+    private val currentFix: suspend () -> PhoneFix? = { null },
 ) : ViewModel() {
 
     val settings: StateFlow<AnchorSettings> = settingsRepository.settings
@@ -45,9 +56,14 @@ class SettingsViewModel(
 
     fun updateSettings(transform: (AnchorSettings) -> AnchorSettings) {
         viewModelScope.launch {
-            val before = settingsRepository.current()
-            val after = transform(before)
-            settingsRepository.update { after }
+            // Transform inside the repository's locked read-modify-write: two
+            // quick edits to different fields must not overwrite each other.
+            lateinit var before: AnchorSettings
+            lateinit var after: AnchorSettings
+            settingsRepository.update { current ->
+                before = current
+                transform(current).also { after = it }
+            }
             if (after.morningStartMinute != before.morningStartMinute ||
                 after.eveningStartMinute != before.eveningStartMinute ||
                 after.eveningSitRequired != before.eveningSitRequired ||
@@ -73,6 +89,62 @@ class SettingsViewModel(
             Phase.MORNING -> it.copy(morningLocationMode = mode)
             Phase.EVENING -> it.copy(eveningLocationMode = mode)
         }
+    }
+
+    fun setHomeStates(phase: Phase, raw: String) = updateSettings {
+        val states = parseRoomList(raw)
+        when (phase) {
+            Phase.MORNING -> it.copy(morningHomeStates = states)
+            Phase.EVENING -> it.copy(eveningHomeStates = states)
+        }
+    }
+
+    // --- Places ---
+
+    private val _placeMessage = MutableStateFlow<String?>(null)
+
+    /** A one-line problem from the last "Use current location", or null. */
+    val placeMessage: StateFlow<String?> = _placeMessage.asStateFlow()
+
+    /**
+     * Saves where the phone is now as [target], keeping any radius already
+     * chosen. A missing or vague fix saves nothing: a place recorded from a
+     * cell-tower guess would put "home" in the wrong street.
+     */
+    fun capturePlace(target: PlaceTarget) {
+        viewModelScope.launch {
+            val fix = currentFix()
+            if (fix == null || !PhonePresence.isUsable(fix)) {
+                _placeMessage.value = CAPTURE_FAILED
+                return@launch
+            }
+            _placeMessage.value = null
+            settingsRepository.update { s ->
+                s.withPlace(target) { old ->
+                    SavedPlace(fix.latitude, fix.longitude, old?.radiusMeters ?: SavedPlace.DEFAULT_RADIUS_METERS)
+                }
+            }
+        }
+    }
+
+    /** Ignores anything but a whole number; clamps the rest. Needs a place to exist. */
+    fun setPlaceRadius(target: PlaceTarget, raw: String) {
+        val meters = raw.trim().toIntOrNull() ?: return
+        updateSettings { s ->
+            s.withPlace(target) { old -> old?.copy(radiusMeters = SavedPlace.clampRadius(meters)) }
+        }
+    }
+
+    fun reportLocationDenied() {
+        _placeMessage.value = PERMISSION_DENIED
+    }
+
+    private fun AnchorSettings.withPlace(
+        target: PlaceTarget,
+        change: (SavedPlace?) -> SavedPlace?,
+    ): AnchorSettings = when (target) {
+        PlaceTarget.HOME -> copy(homePlace = change(homePlace))
+        PlaceTarget.VACATION -> copy(vacationPlace = change(vacationPlace))
     }
 
     fun toggleBlockedApp(packageName: String) = updateSettings {
@@ -190,5 +262,11 @@ class SettingsViewModel(
 
     fun deleteLimit(id: Long) {
         viewModelScope.launch { appLimitDao.deleteById(id) }
+    }
+
+    companion object {
+        const val CAPTURE_FAILED =
+            "Couldn't get a precise enough location. Check that location is on, then try again."
+        const val PERMISSION_DENIED = "Location permission is needed to save a place."
     }
 }

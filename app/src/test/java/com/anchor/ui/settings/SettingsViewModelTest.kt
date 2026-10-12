@@ -10,6 +10,8 @@ import com.anchor.data.db.AnchorDatabase
 import com.anchor.data.db.DefaultQuestions
 import com.anchor.data.db.Phase
 import com.anchor.data.db.SlotKey
+import com.anchor.data.location.PhoneFix
+import com.anchor.data.location.SavedPlace
 import com.anchor.data.settings.LocationMode
 import com.anchor.data.settings.SettingsRepository
 import com.anchor.data.usage.AppLimit
@@ -59,11 +61,12 @@ class SettingsViewModelTest {
         Dispatchers.resetMain()
     }
 
-    private fun viewModel() = SettingsViewModel(
+    private fun viewModel(fix: PhoneFix? = null) = SettingsViewModel(
         settingsRepository = repo,
         questionDao = db.customQuestionDao(),
         appLimitDao = db.appLimitDao(),
         onScheduleChanged = { rescheduleCount++ },
+        currentFix = { fix },
     )
 
     @Test
@@ -326,5 +329,90 @@ class SettingsViewModelTest {
         val summary = LimitSummary.describe(AppLimit(youtube, cooldownMinutes = 20, sessionMinutes = 10))
         assertThat(summary).contains("20 min cooldown")
         assertThat(summary).contains("10 min sessions")
+    }
+
+    // --- Places ---
+
+    private val here = PhoneFix(37.7749, -122.4194, accuracyMeters = 15f, timeMillis = 0L)
+
+    @Test
+    fun `capturing home saves the fix with the default radius`() = runTest {
+        viewModel(here).capturePlace(PlaceTarget.HOME)
+        awaitUntil { repo.current().homePlace != null }
+        assertThat(repo.current().homePlace).isEqualTo(SavedPlace(37.7749, -122.4194, 150))
+    }
+
+    @Test
+    fun `capturing again keeps the radius already chosen`() = runTest {
+        repo.update { it.copy(vacationPlace = SavedPlace(0.0, 0.0, 400)) }
+        viewModel(here).capturePlace(PlaceTarget.VACATION)
+        awaitUntil { repo.current().vacationPlace?.latitude == 37.7749 }
+        assertThat(repo.current().vacationPlace?.radiusMeters).isEqualTo(400)
+    }
+
+    @Test
+    fun `no fix saves nothing and explains why`() = runTest {
+        val vm = viewModel(null)
+        vm.capturePlace(PlaceTarget.HOME)
+        awaitUntil { vm.placeMessage.value != null }
+        assertThat(vm.placeMessage.value).isEqualTo(SettingsViewModel.CAPTURE_FAILED)
+        assertThat(repo.current().homePlace).isNull()
+    }
+
+    @Test
+    fun `a vague fix is refused`() = runTest {
+        val vm = viewModel(here.copy(accuracyMeters = 900f))
+        vm.capturePlace(PlaceTarget.HOME)
+        awaitUntil { vm.placeMessage.value != null }
+        assertThat(repo.current().homePlace).isNull()
+    }
+
+    @Test
+    fun `a successful capture clears an earlier message`() = runTest {
+        val vm = viewModel(here)
+        vm.reportLocationDenied()
+        assertThat(vm.placeMessage.value).isEqualTo(SettingsViewModel.PERMISSION_DENIED)
+        vm.capturePlace(PlaceTarget.HOME)
+        awaitUntil { vm.placeMessage.value == null && repo.current().homePlace != null }
+    }
+
+    @Test
+    fun `radius is clamped`() = runTest {
+        repo.update { it.copy(homePlace = SavedPlace(1.0, 2.0, 150)) }
+        val vm = viewModel()
+        vm.setPlaceRadius(PlaceTarget.HOME, "0")
+        awaitUntil { repo.current().homePlace?.radiusMeters == 25 }
+        vm.setPlaceRadius(PlaceTarget.HOME, "99999")
+        awaitUntil { repo.current().homePlace?.radiusMeters == 5_000 }
+    }
+
+    @Test
+    fun `a radius that is not a whole number is ignored`() = runTest {
+        repo.update { it.copy(homePlace = SavedPlace(1.0, 2.0, 150)) }
+        val vm = viewModel()
+        vm.setPlaceRadius(PlaceTarget.HOME, "wide")
+        vm.setPlaceRadius(PlaceTarget.HOME, "")
+        vm.setPlaceRadius(PlaceTarget.HOME, "300")
+        awaitUntil { repo.current().homePlace?.radiusMeters == 300 }
+    }
+
+    @Test
+    fun `a radius before any place is set does nothing`() = runTest {
+        val vm = viewModel()
+        vm.setPlaceRadius(PlaceTarget.VACATION, "300")
+        vm.updateSettings { it.copy(joplinToken = "marker") }
+        awaitUntil { repo.current().joplinToken == "marker" }
+        assertThat(repo.current().vacationPlace).isNull()
+    }
+
+    // --- State lists ---
+
+    @Test
+    fun `state lists are parsed per phase`() = runTest {
+        val vm = viewModel()
+        vm.setHomeStates(Phase.MORNING, "home, Bedroom ,, Office")
+        vm.setHomeStates(Phase.EVENING, "Living Room")
+        awaitUntil { repo.current().eveningHomeStates == listOf("Living Room") }
+        assertThat(repo.current().morningHomeStates).containsExactly("home", "Bedroom", "Office").inOrder()
     }
 }
