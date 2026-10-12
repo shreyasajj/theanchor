@@ -19,6 +19,7 @@ import java.util.Locale
 fun LocationSection(
     settings: AnchorSettings,
     placeMessage: String?,
+    capturing: PlaceTarget?,
     onChange: ((AnchorSettings) -> AnchorSettings) -> Unit,
     onCapturePlace: (PlaceTarget) -> Unit,
     onSetRadius: (PlaceTarget, String) -> Unit,
@@ -43,7 +44,7 @@ fun LocationSection(
             onPick = { source -> onChange { it.copy(locationSource = source) } },
         )
         if (settings.locationSource == LocationSource.PHONE) {
-            PlaceSetting("Home place", settings.homePlace, PlaceTarget.HOME, onCapturePlace, onSetRadius)
+            PlaceSetting("Home place", settings.homePlace, PlaceTarget.HOME, capturing, onCapturePlace, onSetRadius)
         }
 
         SettingRow(
@@ -57,7 +58,7 @@ fun LocationSection(
             )
         }
         if (settings.vacationMode) {
-            PlaceSetting("Vacation place", settings.vacationPlace, PlaceTarget.VACATION, onCapturePlace, onSetRadius)
+            PlaceSetting("Vacation place", settings.vacationPlace, PlaceTarget.VACATION, capturing, onCapturePlace, onSetRadius)
             if (settings.vacationPlace == null) Hint("Nothing changes until a vacation place is saved.")
         }
 
@@ -82,6 +83,7 @@ private fun PlaceSetting(
     label: String,
     place: SavedPlace?,
     target: PlaceTarget,
+    capturing: PlaceTarget?,
     onCapture: (PlaceTarget) -> Unit,
     onSetRadius: (PlaceTarget, String) -> Unit,
 ) {
@@ -89,7 +91,9 @@ private fun PlaceSetting(
         label,
         supporting = place?.let { "%.5f, %.5f".format(Locale.US, it.latitude, it.longitude) } ?: "Not set",
     ) {
-        TextButton(onClick = { onCapture(target) }) { Text("Use current location") }
+        TextButton(onClick = { onCapture(target) }, enabled = capturing == null) {
+            Text(if (capturing == target) "Locating…" else "Use current location")
+        }
     }
     if (place != null) {
         TextSetting("Radius in metres (25–5000)", place.radiusMeters.toString(), "150") {

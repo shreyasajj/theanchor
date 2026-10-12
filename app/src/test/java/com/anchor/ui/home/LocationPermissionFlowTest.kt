@@ -26,4 +26,19 @@ class LocationPermissionFlowTest {
     fun `precise and all the time is done`() {
         assertThat(LocationPermissionFlow.next(precise = true, background = true)).isEqualTo(LocationAsk.NONE)
     }
+
+    @Test
+    fun `a denial with no rationale left needs the app settings page`() {
+        assertThat(LocationPermissionFlow.needsAppSettings(granted = false, showRationale = false)).isTrue()
+    }
+
+    @Test
+    fun `a denial Android will still ask about does not`() {
+        assertThat(LocationPermissionFlow.needsAppSettings(granted = false, showRationale = true)).isFalse()
+    }
+
+    @Test
+    fun `a grant never does`() {
+        assertThat(LocationPermissionFlow.needsAppSettings(granted = true, showRationale = false)).isFalse()
+    }
 }

@@ -1,13 +1,9 @@
 package com.anchor.ui
 
 import android.Manifest
-import android.app.AppOpsManager
-import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
-import android.os.Process
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -17,7 +13,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -31,7 +26,6 @@ import com.anchor.data.db.CustomQuestionDao
 import com.anchor.data.db.DailyLogDao
 import com.anchor.data.ha.KillSwitch
 import com.anchor.data.location.PhoneLocationSource
-import com.anchor.data.settings.AnchorSettings
 import com.anchor.data.settings.SettingsRepository
 import com.anchor.data.usage.AppLimitDao
 import com.anchor.data.usage.MeditationSessionDao
@@ -40,13 +34,13 @@ import com.anchor.domain.LimitGate
 import com.anchor.domain.LockdownEnforcer
 import com.anchor.ui.lock.EveningLockActivity
 import com.anchor.ui.lock.MeditationActivity
-import com.anchor.service.AnchorAccessibilityService
 import com.anchor.service.AnchorForegroundService
 import com.anchor.service.MorningAlarmScheduler
 import com.anchor.ui.home.DashboardScreen
 import com.anchor.ui.home.DashboardViewModel
 import com.anchor.ui.home.LocationAsk
 import com.anchor.ui.home.LocationPermissionFlow
+import com.anchor.ui.home.PermissionReader
 import com.anchor.ui.home.PermissionState
 import com.anchor.ui.settings.InstalledAppsRepository
 import com.anchor.ui.settings.PlaceTarget
@@ -84,10 +78,19 @@ class MainActivity : ComponentActivity() {
     /** The place waiting on a location permission answer; lost on recreation, which only means tapping again. */
     private var pendingPlace: PlaceTarget? = null
 
+    private val permissions by lazy { PermissionReader(applicationContext) }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         AnchorForegroundService.start(this)
         rescheduleMorningAlarm()
+
+        // Locals, not fields: the ViewModels outlive this Activity across a
+        // rotation, and a lambda that read a field would keep it alive.
+        val alarm = scheduler
+        val location = phoneLocation
+        val apps = installedApps
+        val reader = permissions
 
         val settingsViewModel = ViewModelProvider(
             this,
@@ -96,8 +99,8 @@ class MainActivity : ComponentActivity() {
                     settingsRepository = settingsRepository,
                     questionDao = questionDao,
                     appLimitDao = appLimitDao,
-                    onScheduleChanged = { rescheduleMorningAlarm() },
-                    currentFix = { phoneLocation.current(freshOnly = true) },
+                    onScheduleChanged = { settings -> alarm.schedule(settings) },
+                    currentFix = { location.current(freshOnly = true) },
                 )
             },
         )[SettingsViewModel::class.java]
@@ -112,8 +115,8 @@ class MainActivity : ComponentActivity() {
                     settingsRepository = settingsRepository,
                     limitGate = limitGate,
                     meditationDao = meditationDao,
-                    appLabels = { installedApps.launchableApps().associate { it.packageName to it.label } },
-                    readPermissions = { settings -> readPermissions(settings) },
+                    appLabels = { apps.launchableApps().associate { it.packageName to it.label } },
+                    readPermissions = { settings -> reader.read(settings) },
                 )
             },
         )[DashboardViewModel::class.java]
@@ -146,7 +149,10 @@ class MainActivity : ComponentActivity() {
                 // foreground location, and shows it as a settings page.
                 val backgroundLocationPermission = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestPermission()
-                ) { dashboardViewModel.refresh() }
+                ) { ok ->
+                    if (deniedForGood(Manifest.permission.ACCESS_BACKGROUND_LOCATION, ok)) openAppSettings()
+                    dashboardViewModel.refresh()
+                }
 
                 val foregroundLocationPermission = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestMultiplePermissions()
@@ -155,6 +161,7 @@ class MainActivity : ComponentActivity() {
                     if (granted[Manifest.permission.ACCESS_FINE_LOCATION] == true) {
                         backgroundLocationPermission.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
                     } else {
+                        if (deniedForGood(Manifest.permission.ACCESS_FINE_LOCATION, false)) openAppSettings()
                         dashboardViewModel.refresh()
                     }
                 }
@@ -177,7 +184,10 @@ class MainActivity : ComponentActivity() {
                     when {
                         granted[Manifest.permission.ACCESS_FINE_LOCATION] == true -> capture(target)
                         granted.values.any { it } -> settingsViewModel.reportPreciseLocationNeeded()
-                        else -> settingsViewModel.reportLocationDenied()
+                        else -> {
+                            settingsViewModel.reportLocationDenied()
+                            if (deniedForGood(Manifest.permission.ACCESS_FINE_LOCATION, false)) openAppSettings()
+                        }
                     }
                 }
 
@@ -256,45 +266,15 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch { scheduler.schedule(settingsRepository.current()) }
     }
 
-    private fun readPermissions(settings: AnchorSettings) = PermissionState(
-        accessibilityEnabled = isAccessibilityServiceEnabled(),
-        overlayGranted = Settings.canDrawOverlays(this),
-        usageStatsGranted = hasUsageStatsPermission(),
-        notificationsGranted = granted(Manifest.permission.POST_NOTIFICATIONS),
-        exportFolderChosen = settings.exportTreeUri != null && runCatching {
-            contentResolver.persistedUriPermissions.any {
-                it.uri.toString() == settings.exportTreeUri && it.isWritePermission
-            }
-        }.getOrDefault(false),
-        locationNeeded = settings.usesPhoneLocation,
-        locationGranted = nextLocationAsk() == LocationAsk.NONE,
-    )
+    private fun nextLocationAsk(): LocationAsk = permissions.nextLocationAsk()
 
-    private fun granted(permission: String): Boolean =
-        ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
+    /** True when Android will not show [permission]'s request again after this denial. */
+    private fun deniedForGood(permission: String, granted: Boolean): Boolean =
+        LocationPermissionFlow.needsAppSettings(granted, shouldShowRequestPermissionRationale(permission))
 
-    private fun nextLocationAsk(): LocationAsk = LocationPermissionFlow.next(
-        precise = granted(Manifest.permission.ACCESS_FINE_LOCATION),
-        background = granted(Manifest.permission.ACCESS_BACKGROUND_LOCATION),
-    )
-
-    private fun isAccessibilityServiceEnabled(): Boolean {
-        val expected = "$packageName/${AnchorAccessibilityService::class.java.name}"
-        val enabled = Settings.Secure.getString(
-            contentResolver,
-            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
-        ).orEmpty()
-        return enabled.split(':').any { it.equals(expected, ignoreCase = true) }
-    }
-
-    private fun hasUsageStatsPermission(): Boolean {
-        val appOps = getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
-        val mode = appOps.unsafeCheckOpNoThrow(
-            AppOpsManager.OPSTR_GET_USAGE_STATS,
-            Process.myUid(),
-            packageName,
-        )
-        return mode == AppOpsManager.MODE_ALLOWED
+    /** The only place a permission denied for good can still be granted. */
+    private fun openAppSettings() {
+        startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
     }
 
     /** Builds a one-off ViewModel factory. */

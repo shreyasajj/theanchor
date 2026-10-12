@@ -49,6 +49,7 @@ fun SettingsScreen(
     val eveningQuestions by viewModel.eveningQuestions.collectAsState()
     val limits by viewModel.appLimits.collectAsState()
     val placeMessage by viewModel.placeMessage.collectAsState()
+    val capturing by viewModel.capturing.collectAsState()
 
     var apps by remember { mutableStateOf(emptyList<InstalledApp>()) }
     LaunchedEffect(Unit) { apps = installedApps.launchableApps() }
@@ -130,6 +131,7 @@ fun SettingsScreen(
             item { LocationSection(
                 settings = settings,
                 placeMessage = placeMessage,
+                capturing = capturing,
                 onChange = viewModel::updateSettings,
                 onCapturePlace = onCapturePlace,
                 onSetRadius = viewModel::setPlaceRadius,

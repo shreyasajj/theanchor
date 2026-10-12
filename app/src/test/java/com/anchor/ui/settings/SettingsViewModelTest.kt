@@ -17,6 +17,7 @@ import com.anchor.data.settings.SettingsRepository
 import com.anchor.data.usage.AppLimit
 import com.anchor.ui.settings.sections.LimitSummary
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -61,12 +62,14 @@ class SettingsViewModelTest {
         Dispatchers.resetMain()
     }
 
-    private fun viewModel(fix: PhoneFix? = null) = SettingsViewModel(
+    private fun viewModel(fix: PhoneFix? = null) = viewModelLocating { fix }
+
+    private fun viewModelLocating(currentFix: suspend () -> PhoneFix?) = SettingsViewModel(
         settingsRepository = repo,
         questionDao = db.customQuestionDao(),
         appLimitDao = db.appLimitDao(),
         onScheduleChanged = { rescheduleCount++ },
-        currentFix = { fix },
+        currentFix = currentFix,
     )
 
     @Test
@@ -440,5 +443,50 @@ class SettingsViewModelTest {
         val vm = viewModel()
         vm.reportPreciseLocationNeeded()
         assertThat(vm.placeMessage.value).isEqualTo(SettingsViewModel.PRECISE_NEEDED)
+    }
+
+    // --- Locating feedback ---
+
+    @Test
+    fun `locating shows while waiting for a fix and clears once saved`() = runTest {
+        val pending = CompletableDeferred<PhoneFix?>()
+        val vm = viewModelLocating { pending.await() }
+        vm.capturePlace(PlaceTarget.HOME)
+        awaitUntil { vm.capturing.value == PlaceTarget.HOME }
+        pending.complete(here)
+        awaitUntil { vm.capturing.value == null && repo.current().homePlace != null }
+    }
+
+    @Test
+    fun `a failed capture stops locating`() = runTest {
+        val vm = viewModel(null)
+        vm.capturePlace(PlaceTarget.HOME)
+        awaitUntil { vm.placeMessage.value != null }
+        assertThat(vm.capturing.value).isNull()
+    }
+
+    @Test
+    fun `another tap while locating is ignored`() = runTest {
+        val pending = CompletableDeferred<PhoneFix?>()
+        var asked = 0
+        val vm = viewModelLocating { asked++; pending.await() }
+        vm.capturePlace(PlaceTarget.HOME)
+        vm.capturePlace(PlaceTarget.VACATION)
+        pending.complete(here)
+        awaitUntil { vm.capturing.value == null && repo.current().homePlace != null }
+        assertThat(asked).isEqualTo(1)
+        assertThat(repo.current().vacationPlace).isNull()
+    }
+
+    @Test
+    fun `starting to locate clears an earlier message`() = runTest {
+        val pending = CompletableDeferred<PhoneFix?>()
+        val vm = viewModelLocating { pending.await() }
+        vm.reportLocationDenied()
+        vm.capturePlace(PlaceTarget.HOME)
+        awaitUntil { vm.capturing.value != null }
+        assertThat(vm.placeMessage.value).isNull()
+        pending.complete(null)
+        awaitUntil { vm.capturing.value == null }
     }
 }

@@ -14,4 +14,11 @@ object LocationPermissionFlow {
         !background -> LocationAsk.BACKGROUND
         else -> LocationAsk.NONE
     }
+
+    /**
+     * A denial with no rationale to show means Android will not ask again
+     * (denied twice, or "Don't ask again"): only the app's settings page can
+     * grant it now, so a request would silently do nothing.
+     */
+    fun needsAppSettings(granted: Boolean, showRationale: Boolean): Boolean = !granted && !showRationale
 }

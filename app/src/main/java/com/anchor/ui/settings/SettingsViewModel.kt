@@ -26,9 +26,9 @@ import kotlinx.coroutines.launch
 enum class PlaceTarget { HOME, VACATION }
 
 /**
- * @param onScheduleChanged invoked when a change requires re-arming the
- *   morning alarm. Passed as a lambda so the ViewModel stays Android-free
- *   and unit-testable.
+ * @param onScheduleChanged invoked with the new settings when a change
+ *   requires re-arming the morning alarm. Passed as a lambda so the
+ *   ViewModel stays Android-free and unit-testable.
  * @param currentFix reads the phone's location for "Use current location";
  *   a lambda for the same reason as [onScheduleChanged].
  */
@@ -36,7 +36,7 @@ class SettingsViewModel(
     private val settingsRepository: SettingsRepository,
     private val questionDao: CustomQuestionDao,
     private val appLimitDao: AppLimitDao,
-    private val onScheduleChanged: () -> Unit,
+    private val onScheduleChanged: (AnchorSettings) -> Unit,
     private val currentFix: suspend () -> PhoneFix? = { null },
 ) : ViewModel() {
 
@@ -69,7 +69,7 @@ class SettingsViewModel(
                 after.eveningSitRequired != before.eveningSitRequired ||
                 after.eveningPromptOnItsOwn != before.eveningPromptOnItsOwn
             ) {
-                onScheduleChanged()
+                onScheduleChanged(after)
             }
         }
     }
@@ -106,6 +106,14 @@ class SettingsViewModel(
     /** A one-line problem from the last "Use current location", or null. */
     val placeMessage: StateFlow<String?> = _placeMessage.asStateFlow()
 
+    private val _capturing = MutableStateFlow<PlaceTarget?>(null)
+
+    /**
+     * The place "Use current location" is waiting on a fix for (up to 15 s),
+     * or null. Its button shows "Locating…"; the other is disabled meanwhile.
+     */
+    val capturing: StateFlow<PlaceTarget?> = _capturing.asStateFlow()
+
     /**
      * Saves where the phone is now as [target], keeping any radius already
      * chosen. A missing or vague fix saves nothing: a place recorded from a
@@ -114,19 +122,26 @@ class SettingsViewModel(
      * location: the place is useless to the gates without it.
      */
     fun capturePlace(target: PlaceTarget, onSaved: () -> Unit = {}) {
+        // One at a time: a second tap while locating would only race the first.
+        if (_capturing.value != null) return
+        _capturing.value = target
+        _placeMessage.value = null
         viewModelScope.launch {
-            val fix = currentFix()
-            if (fix == null || !PhonePresence.isUsable(fix)) {
-                _placeMessage.value = CAPTURE_FAILED
-                return@launch
-            }
-            _placeMessage.value = null
-            settingsRepository.update { s ->
-                s.withPlace(target) { old ->
-                    SavedPlace(fix.latitude, fix.longitude, old?.radiusMeters ?: SavedPlace.DEFAULT_RADIUS_METERS)
+            try {
+                val fix = currentFix()
+                if (fix == null || !PhonePresence.isUsable(fix)) {
+                    _placeMessage.value = CAPTURE_FAILED
+                    return@launch
                 }
+                settingsRepository.update { s ->
+                    s.withPlace(target) { old ->
+                        SavedPlace(fix.latitude, fix.longitude, old?.radiusMeters ?: SavedPlace.DEFAULT_RADIUS_METERS)
+                    }
+                }
+                onSaved()
+            } finally {
+                _capturing.value = null
             }
-            onSaved()
         }
     }
 
