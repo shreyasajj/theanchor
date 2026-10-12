@@ -27,13 +27,13 @@ If you *do* want to drive a real device, do it deliberately with
 
 ## One-time setup
 
-Requires JDK 17 and the Android command-line tools.
+Requires JDK 25 and the Android command-line tools.
 
 ```bash
-brew install openjdk@17
+brew install openjdk@25
 brew install --cask android-commandlinetools
 
-export JAVA_HOME=/opt/homebrew/opt/openjdk@17
+export JAVA_HOME=/opt/homebrew/opt/openjdk@25
 export ANDROID_HOME=/opt/homebrew/share/android-commandlinetools
 export PATH="$JAVA_HOME/bin:$PATH"
 
