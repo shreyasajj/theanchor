@@ -23,12 +23,18 @@ import kotlin.coroutines.resume
  * answers instantly; otherwise one fresh fix is requested and abandoned
  * after [FRESH_FIX_TIMEOUT_MILLIS], the same budget as a Home Assistant call.
  * Saving a place asks for a fresh fix only, and waits longer for it.
+ * A fresh request that just failed is not repeated for
+ * [FAILURE_MEMORY_MILLIS]: a phone that cannot fix indoors would otherwise
+ * make every blocked-app open wait the full timeout again.
  */
 @Singleton
 class AndroidPhoneLocationSource @Inject constructor(
     @ApplicationContext private val context: Context,
     private val clock: Clock,
 ) : PhoneLocationSource {
+
+    /** When the last fresh request came back empty; null after a success. */
+    @Volatile private var lastFreshFailureAt: Long? = null
 
     override suspend fun current(freshOnly: Boolean): PhoneFix? = try {
         if (!hasPermission()) null else read(freshOnly)
@@ -52,15 +58,18 @@ class AndroidPhoneLocationSource @Inject constructor(
         val cached = enabled.mapNotNull { manager.getLastKnownLocation(it)?.toFix() }
         bestCached(cached, clock.millis(), freshOnly)?.let { return it }
 
+        if (!freshAllowed(lastFreshFailureAt, clock.millis(), freshOnly)) return null
         val provider = PROVIDER_PREFERENCE.firstOrNull { it in enabled } ?: return null
         val timeout = if (freshOnly) CAPTURE_TIMEOUT_MILLIS else FRESH_FIX_TIMEOUT_MILLIS
-        return withTimeoutOrNull(timeout) {
+        val fresh = withTimeoutOrNull(timeout) {
             suspendCancellableCoroutine<Location?> { cont ->
                 val signal = CancellationSignal()
                 cont.invokeOnCancellation { signal.cancel() }
                 manager.getCurrentLocation(provider, signal, context.mainExecutor) { cont.resume(it) }
             }
         }?.toFix()
+        lastFreshFailureAt = if (fresh == null) clock.millis() else null
+        return fresh
     }
 
     private fun Location.toFix() = PhoneFix(
@@ -76,6 +85,12 @@ class AndroidPhoneLocationSource @Inject constructor(
 
         /** Someone is waiting on a button, not a blocked app; give GPS time to fix. */
         const val CAPTURE_TIMEOUT_MILLIS = 15_000L
+
+        const val FAILURE_MEMORY_MILLIS = 45_000L
+
+        /** Saving a place always tries; a check skips the wait right after a failure. */
+        fun freshAllowed(lastFailureMillis: Long?, nowMillis: Long, freshOnly: Boolean): Boolean =
+            freshOnly || lastFailureMillis == null || nowMillis - lastFailureMillis >= FAILURE_MEMORY_MILLIS
 
         /**
          * The newest cached fix that is recent and precise enough, or null to
