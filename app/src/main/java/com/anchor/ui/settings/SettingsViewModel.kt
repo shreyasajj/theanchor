@@ -109,9 +109,11 @@ class SettingsViewModel(
     /**
      * Saves where the phone is now as [target], keeping any radius already
      * chosen. A missing or vague fix saves nothing: a place recorded from a
-     * cell-tower guess would put "home" in the wrong street.
+     * cell-tower guess would put "home" in the wrong street. [onSaved] runs
+     * only after a place is stored, so the caller can then ask for background
+     * location: the place is useless to the gates without it.
      */
-    fun capturePlace(target: PlaceTarget) {
+    fun capturePlace(target: PlaceTarget, onSaved: () -> Unit = {}) {
         viewModelScope.launch {
             val fix = currentFix()
             if (fix == null || !PhonePresence.isUsable(fix)) {
@@ -124,6 +126,7 @@ class SettingsViewModel(
                     SavedPlace(fix.latitude, fix.longitude, old?.radiusMeters ?: SavedPlace.DEFAULT_RADIUS_METERS)
                 }
             }
+            onSaved()
         }
     }
 
@@ -137,6 +140,10 @@ class SettingsViewModel(
 
     fun reportLocationDenied() {
         _placeMessage.value = PERMISSION_DENIED
+    }
+
+    fun reportPreciseLocationNeeded() {
+        _placeMessage.value = PRECISE_NEEDED
     }
 
     private fun AnchorSettings.withPlace(
@@ -268,5 +275,7 @@ class SettingsViewModel(
         const val CAPTURE_FAILED =
             "Couldn't get a precise enough location. Check that location is on, then try again."
         const val PERMISSION_DENIED = "Location permission is needed to save a place."
+        const val PRECISE_NEEDED =
+            "Turn on Precise location for The Anchor: approximate location can't tell home from the next street."
     }
 }

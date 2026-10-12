@@ -45,6 +45,8 @@ import com.anchor.service.AnchorForegroundService
 import com.anchor.service.MorningAlarmScheduler
 import com.anchor.ui.home.DashboardScreen
 import com.anchor.ui.home.DashboardViewModel
+import com.anchor.ui.home.LocationAsk
+import com.anchor.ui.home.LocationPermissionFlow
 import com.anchor.ui.home.PermissionState
 import com.anchor.ui.settings.InstalledAppsRepository
 import com.anchor.ui.settings.PlaceTarget
@@ -149,11 +151,22 @@ class MainActivity : ComponentActivity() {
                 val foregroundLocationPermission = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestMultiplePermissions()
                 ) { granted ->
-                    if (granted.values.any { it }) {
+                    // Only precise is worth going on to "all the time" for.
+                    if (granted[Manifest.permission.ACCESS_FINE_LOCATION] == true) {
                         backgroundLocationPermission.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
                     } else {
                         dashboardViewModel.refresh()
                     }
+                }
+
+                // Save the place, then ask for "all the time": without it the
+                // gates, which run in the background, never get a fix.
+                val capture: (PlaceTarget) -> Unit = { target ->
+                    settingsViewModel.capturePlace(target, onSaved = {
+                        if (nextLocationAsk() == LocationAsk.BACKGROUND) {
+                            backgroundLocationPermission.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+                        }
+                    })
                 }
 
                 val placeLocationPermission = rememberLauncherForActivityResult(
@@ -161,8 +174,11 @@ class MainActivity : ComponentActivity() {
                 ) { granted ->
                     val target = pendingPlace ?: return@rememberLauncherForActivityResult
                     pendingPlace = null
-                    if (granted.values.any { it }) settingsViewModel.capturePlace(target)
-                    else settingsViewModel.reportLocationDenied()
+                    when {
+                        granted[Manifest.permission.ACCESS_FINE_LOCATION] == true -> capture(target)
+                        granted.values.any { it } -> settingsViewModel.reportPreciseLocationNeeded()
+                        else -> settingsViewModel.reportLocationDenied()
+                    }
                 }
 
                 NavHost(navController = navController, startDestination = "dashboard") {
@@ -202,12 +218,12 @@ class MainActivity : ComponentActivity() {
                                         android.Manifest.permission.POST_NOTIFICATIONS
                                     )
                                     PermissionState.EXPORT_FOLDER -> folderPicker.launch(null)
-                                    PermissionState.LOCATION ->
-                                        if (hasForegroundLocation()) {
+                                    PermissionState.LOCATION -> when (nextLocationAsk()) {
+                                        LocationAsk.PRECISE -> foregroundLocationPermission.launch(FOREGROUND_LOCATION)
+                                        LocationAsk.BACKGROUND ->
                                             backgroundLocationPermission.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
-                                        } else {
-                                            foregroundLocationPermission.launch(FOREGROUND_LOCATION)
-                                        }
+                                        LocationAsk.NONE -> dashboardViewModel.refresh()
+                                    }
                                 }
                             },
                         )
@@ -218,8 +234,8 @@ class MainActivity : ComponentActivity() {
                             installedApps = installedApps,
                             onPickExportFolder = { folderPicker.launch(null) },
                             onCapturePlace = { target ->
-                                if (hasForegroundLocation()) {
-                                    settingsViewModel.capturePlace(target)
+                                if (nextLocationAsk() != LocationAsk.PRECISE) {
+                                    capture(target)
                                 } else {
                                     pendingPlace = target
                                     placeLocationPermission.launch(FOREGROUND_LOCATION)
@@ -251,13 +267,16 @@ class MainActivity : ComponentActivity() {
             }
         }.getOrDefault(false),
         locationNeeded = settings.usesPhoneLocation,
-        locationGranted = granted(Manifest.permission.ACCESS_BACKGROUND_LOCATION),
+        locationGranted = nextLocationAsk() == LocationAsk.NONE,
     )
 
     private fun granted(permission: String): Boolean =
         ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
 
-    private fun hasForegroundLocation(): Boolean = FOREGROUND_LOCATION.any { granted(it) }
+    private fun nextLocationAsk(): LocationAsk = LocationPermissionFlow.next(
+        precise = granted(Manifest.permission.ACCESS_FINE_LOCATION),
+        background = granted(Manifest.permission.ACCESS_BACKGROUND_LOCATION),
+    )
 
     private fun isAccessibilityServiceEnabled(): Boolean {
         val expected = "$packageName/${AnchorAccessibilityService::class.java.name}"

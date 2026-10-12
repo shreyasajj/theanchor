@@ -415,4 +415,30 @@ class SettingsViewModelTest {
         awaitUntil { repo.current().eveningHomeStates == listOf("Living Room") }
         assertThat(repo.current().morningHomeStates).containsExactly("home", "Bedroom", "Office").inOrder()
     }
+
+    // --- Capture follow-ups ---
+
+    @Test
+    fun `a saved place reports back so background location can be asked for`() = runTest {
+        var saved = 0
+        viewModel(here).capturePlace(PlaceTarget.HOME, onSaved = { saved++ })
+        awaitUntil { saved == 1 }
+        assertThat(repo.current().homePlace).isNotNull()
+    }
+
+    @Test
+    fun `a failed capture does not report back`() = runTest {
+        var saved = 0
+        val vm = viewModel(null)
+        vm.capturePlace(PlaceTarget.HOME, onSaved = { saved++ })
+        awaitUntil { vm.placeMessage.value != null }
+        assertThat(saved).isEqualTo(0)
+    }
+
+    @Test
+    fun `approximate location gets its own message`() = runTest {
+        val vm = viewModel()
+        vm.reportPreciseLocationNeeded()
+        assertThat(vm.placeMessage.value).isEqualTo(SettingsViewModel.PRECISE_NEEDED)
+    }
 }

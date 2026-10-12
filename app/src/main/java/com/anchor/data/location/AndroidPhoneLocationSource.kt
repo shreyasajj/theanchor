@@ -31,7 +31,7 @@ class AndroidPhoneLocationSource @Inject constructor(
 ) : PhoneLocationSource {
 
     override suspend fun current(freshOnly: Boolean): PhoneFix? = try {
-        if (!hasPermission()) null else read(freshOnly)?.toFix()
+        if (!hasPermission()) null else read(freshOnly)
     } catch (e: CancellationException) {
         throw e
     } catch (t: Throwable) {
@@ -45,12 +45,12 @@ class AndroidPhoneLocationSource @Inject constructor(
             .any { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED }
 
     @SuppressLint("MissingPermission") // hasPermission() is checked before every read
-    private suspend fun read(freshOnly: Boolean): Location? {
+    private suspend fun read(freshOnly: Boolean): PhoneFix? {
         val manager = context.getSystemService(LocationManager::class.java) ?: return null
         val enabled = manager.getProviders(true)
 
-        val cached = enabled.mapNotNull { manager.getLastKnownLocation(it) }.maxByOrNull { it.time }
-        if (cacheUsable(cached?.time, clock.millis(), freshOnly)) return cached
+        val cached = enabled.mapNotNull { manager.getLastKnownLocation(it)?.toFix() }
+        bestCached(cached, clock.millis(), freshOnly)?.let { return it }
 
         val provider = PROVIDER_PREFERENCE.firstOrNull { it in enabled } ?: return null
         val timeout = if (freshOnly) CAPTURE_TIMEOUT_MILLIS else FRESH_FIX_TIMEOUT_MILLIS
@@ -60,7 +60,7 @@ class AndroidPhoneLocationSource @Inject constructor(
                 cont.invokeOnCancellation { signal.cancel() }
                 manager.getCurrentLocation(provider, signal, context.mainExecutor) { cont.resume(it) }
             }
-        }
+        }?.toFix()
     }
 
     private fun Location.toFix() = PhoneFix(
@@ -77,8 +77,16 @@ class AndroidPhoneLocationSource @Inject constructor(
         /** Someone is waiting on a button, not a blocked app; give GPS time to fix. */
         const val CAPTURE_TIMEOUT_MILLIS = 15_000L
 
-        fun cacheUsable(fixTimeMillis: Long?, nowMillis: Long, freshOnly: Boolean): Boolean =
-            !freshOnly && fixTimeMillis != null && nowMillis - fixTimeMillis <= MAX_CACHED_AGE_MILLIS
+        /**
+         * The newest cached fix that is recent and precise enough, or null to
+         * ask for a fresh one. Precision is filtered first: a newer cell-tower
+         * guess must not hide a slightly older Wi-Fi or GPS fix.
+         */
+        fun bestCached(cached: List<PhoneFix>, nowMillis: Long, freshOnly: Boolean): PhoneFix? =
+            if (freshOnly) null
+            else cached
+                .filter { PhonePresence.isUsable(it) && nowMillis - it.timeMillis <= MAX_CACHED_AGE_MILLIS }
+                .maxByOrNull { it.timeMillis }
 
         /** Fused is quickest indoors; GPS last because it may never fix inside a house. */
         private val PROVIDER_PREFERENCE = listOf(
