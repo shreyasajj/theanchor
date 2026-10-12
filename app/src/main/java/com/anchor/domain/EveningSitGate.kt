@@ -1,8 +1,7 @@
 package com.anchor.domain
 
-import com.anchor.data.ha.HomeAssistantClient
+import com.anchor.data.db.Phase
 import com.anchor.data.ha.KillSwitch
-import com.anchor.data.ha.LocationGate
 import com.anchor.data.ha.Presence
 import com.anchor.data.settings.AnchorSettings
 import com.anchor.data.settings.SettingsProvider
@@ -34,7 +33,7 @@ object EveningSit {
 class EveningSitGate @Inject constructor(
     private val settingsProvider: SettingsProvider,
     private val meditationDao: MeditationSessionDao,
-    private val client: HomeAssistantClient,
+    private val presence: PresenceResolver,
     private val killSwitch: KillSwitch,
     private val anchorDate: AnchorDate,
 ) {
@@ -54,13 +53,8 @@ class EveningSitGate @Inject constructor(
 
         if (killSwitch.blockingDisabled(settings)) return SitDecision.Skip(SkipReason.OVERRIDE_ACTIVE)
 
-        val presence = LocationGate.evaluate(
-            result = client.fetchDeviceTracker(settings),
-            mode = settings.eveningLocationMode,
-            allowedRooms = settings.eveningAllowedRooms,
-        )
         val lock = SitDecision.Lock(EveningSit.requiredSeconds(settings), sat)
-        return when (presence) {
+        return when (presence.resolve(settings, Phase.EVENING)) {
             Presence.IN_SCOPE -> lock
             Presence.OUT_OF_SCOPE -> SitDecision.Skip(SkipReason.NOT_IN_SCOPE)
             Presence.UNKNOWN ->

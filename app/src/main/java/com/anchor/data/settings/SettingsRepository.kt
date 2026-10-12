@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import com.anchor.data.export.NoteFormat
+import com.anchor.data.location.SavedPlace
 import com.anchor.domain.Streak
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -34,6 +35,12 @@ class SettingsRepository @Inject constructor(
         val MORNING_ROOMS = stringPreferencesKey("morning_rooms")
         val EVENING_MODE = stringPreferencesKey("evening_mode")
         val EVENING_ROOMS = stringPreferencesKey("evening_rooms")
+        val MORNING_HOME_STATES = stringPreferencesKey("morning_home_states")
+        val EVENING_HOME_STATES = stringPreferencesKey("evening_home_states")
+        val LOCATION_SOURCE = stringPreferencesKey("location_source")
+        val HOME_PLACE = stringPreferencesKey("home_place")
+        val VACATION_MODE = booleanPreferencesKey("vacation_mode")
+        val VACATION_PLACE = stringPreferencesKey("vacation_place")
         val ENFORCE_WITHOUT_HA = booleanPreferencesKey("enforce_without_ha")
         val RELOCK_BUBBLE = booleanPreferencesKey("relock_bubble")
         val PAUSES_OWED = stringSetPreferencesKey("pauses_owed")
@@ -75,6 +82,14 @@ class SettingsRepository @Inject constructor(
             prefs[Keys.MORNING_ROOMS] = formatRoomList(next.morningAllowedRooms)
             prefs[Keys.EVENING_MODE] = next.eveningLocationMode.name
             prefs[Keys.EVENING_ROOMS] = formatRoomList(next.eveningAllowedRooms)
+            prefs[Keys.MORNING_HOME_STATES] = formatRoomList(next.morningHomeStates)
+            prefs[Keys.EVENING_HOME_STATES] = formatRoomList(next.eveningHomeStates)
+            prefs[Keys.LOCATION_SOURCE] = next.locationSource.name
+            val home = next.homePlace
+            if (home == null) prefs.remove(Keys.HOME_PLACE) else prefs[Keys.HOME_PLACE] = home.format()
+            prefs[Keys.VACATION_MODE] = next.vacationMode
+            val vacation = next.vacationPlace
+            if (vacation == null) prefs.remove(Keys.VACATION_PLACE) else prefs[Keys.VACATION_PLACE] = vacation.format()
             prefs[Keys.ENFORCE_WITHOUT_HA] = next.enforceWithoutHomeAssistant
             prefs[Keys.RELOCK_BUBBLE] = next.showRelockBubble
             prefs[Keys.PAUSES_OWED] = next.pausesOwed
@@ -147,6 +162,14 @@ class SettingsRepository @Inject constructor(
             morningAllowedRooms = parseRoomList(this[Keys.MORNING_ROOMS] ?: ""),
             eveningLocationMode = this[Keys.EVENING_MODE]?.toLocationMode() ?: d.eveningLocationMode,
             eveningAllowedRooms = parseRoomList(this[Keys.EVENING_ROOMS] ?: ""),
+            // A missing key means "never edited" and gets the default; a
+            // stored empty string is a deliberate empty list.
+            morningHomeStates = this[Keys.MORNING_HOME_STATES]?.let(::parseRoomList) ?: d.morningHomeStates,
+            eveningHomeStates = this[Keys.EVENING_HOME_STATES]?.let(::parseRoomList) ?: d.eveningHomeStates,
+            locationSource = this[Keys.LOCATION_SOURCE]?.toLocationSource() ?: d.locationSource,
+            homePlace = SavedPlace.parse(this[Keys.HOME_PLACE]),
+            vacationMode = this[Keys.VACATION_MODE] ?: d.vacationMode,
+            vacationPlace = SavedPlace.parse(this[Keys.VACATION_PLACE]),
             enforceWithoutHomeAssistant = this[Keys.ENFORCE_WITHOUT_HA] ?: d.enforceWithoutHomeAssistant,
             showRelockBubble = this[Keys.RELOCK_BUBBLE] ?: d.showRelockBubble,
             pausesOwed = this[Keys.PAUSES_OWED] ?: d.pausesOwed,
@@ -169,6 +192,9 @@ class SettingsRepository @Inject constructor(
 
     private fun String.toLocationMode(): LocationMode =
         runCatching { LocationMode.valueOf(this) }.getOrDefault(LocationMode.AT_HOME)
+
+    private fun String.toLocationSource(): LocationSource =
+        runCatching { LocationSource.valueOf(this) }.getOrDefault(LocationSource.HOME_ASSISTANT)
 
     private fun String.toEnforcementMode(): EnforcementMode =
         runCatching { EnforcementMode.valueOf(this) }.getOrDefault(EnforcementMode.STRICT)

@@ -156,7 +156,9 @@ Two independent uses, both optional.
 
 **Location gating** decides whether the protocol applies where you are. Two modes:
 
-- *At home* — the device tracker's state is `home`.
+- *Entity state* — the device tracker's state is one of your "States that count"
+  (`home` unless you change it). List several, e.g. `home, Bedroom, Office`, for
+  trackers whose state is a room or zone. Matching ignores case and must be exact.
 - *Specific rooms* — the tracker's `friendly_name` (or its state) contains one of
   your room names, matched case-insensitively. Useful with per-room presence
   sensors: lock down in the bedroom, not in the kitchen.
@@ -173,6 +175,36 @@ input_boolean:
     name: Anchor override
     icon: mdi:anchor
 ```
+
+### Phone location and vacation mode
+
+Under **Settings → Location** you can skip Home Assistant for location entirely:
+
+- **This phone** — save a home place with **Use current location** and set a
+  radius (150 m by default, 25–5000 m). Inside the radius counts as home.
+- **Vacation mode** — save a second place. While the switch is on, that place is
+  home, checked with the phone's location, and Home Assistant is not asked where
+  you are. Turn it on before saving a place and nothing changes.
+
+Both need **precise** location set to **Allow all the time**, because the checks
+run in the background. Approximate location blurs readings to about 2 km, too
+coarse to tell home from the next street, so the app asks for precise instead.
+Saving a place goes on to ask for "all the time" if it is missing, and the
+dashboard lists it under Setup until it is granted. If Android has stopped
+asking (you denied it twice), the Setup button opens the app's settings page,
+the only place it can still be turned on.
+
+How readings are taken:
+
+- A check uses a cached reading up to 10 minutes old that is precise to 500 m,
+  or waits up to 5 seconds for a new one.
+- If that wait comes back empty, say indoors on a GPS-only phone, checks in the
+  next 45 seconds do not wait again; they treat your location as unknown.
+- **Use current location** always waits for a new reading, up to 15 seconds.
+  The button reads **Locating…** meanwhile, and nothing is saved from a vague
+  or missing reading.
+
+The kill switch still comes from Home Assistant in every mode.
 
 Create a long-lived access token from your Home Assistant profile page and put the
 URL, token and device tracker entity into Settings.
@@ -217,10 +249,11 @@ Every uncertain path does **less** blocking, not more:
 | Confirmed away from home | skip | 5-second pause | unaffected |
 | Home Assistant unreachable | skip | 5-second pause | unaffected |
 | Home Assistant not configured | skip | 5-second pause | unaffected |
+| Phone location off, denied, or vaguer than 500 m | skip | 5-second pause | unaffected |
 | Usage access revoked | unaffected | unaffected | nothing blocked |
 | Kill switch on | skip | allow | allow |
 
-The single toggle that changes this is **Ask even without Home Assistant**. Turn it
+The single toggle that changes this is **Ask even when location is unknown**. Turn it
 on and an unknown location still shows the questions, which is what you want if you
 never set Home Assistant up. A confirmed "not home" reading still skips either way.
 

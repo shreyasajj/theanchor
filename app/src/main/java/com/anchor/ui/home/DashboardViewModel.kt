@@ -94,7 +94,7 @@ class DashboardViewModel(
     private val limitGate: LimitGate,
     private val meditationDao: MeditationSessionDao,
     private val appLabels: suspend () -> Map<String, String>,
-    private val readPermissions: (exportTreeUri: String?) -> PermissionState,
+    private val readPermissions: (AnchorSettings) -> PermissionState,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(DashboardUiState())
@@ -117,7 +117,7 @@ class DashboardViewModel(
                 today = recent[today],
                 week = weekEnding(today, recent),
                 overrideStatus = if (settings.killSwitchEnabled) killSwitch.check(settings) else OverrideStatus.INACTIVE,
-                permissions = readPermissions(settings.exportTreeUri),
+                permissions = readPermissions(settings),
                 usage = live.usage,
                 settings = settings,
                 meditationSecondsToday = live.meditationSeconds,

@@ -54,6 +54,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.delay
 import java.util.Locale
+import com.anchor.data.settings.PresenceSource
 
 @Composable
 fun DashboardScreen(
@@ -81,6 +82,7 @@ fun DashboardScreen(
     ) {
         item(key = "header") { Header(state, onOpenSettings) }
         if (state.overrideStatus == OverrideStatus.ACTIVE) item(key = "override") { OverrideBanner() }
+        if (state.settings.presenceSource == PresenceSource.VACATION) item(key = "vacation") { VacationBanner() }
         if (setup != null) item(key = "setup") { SetupCard(setup, onFixPermission) }
         item(key = "today") { TodayCard(state, onAnswerMorning, onAnswerEvening, onMeditate) }
         if (state.usage.isNotEmpty()) item(key = "limits") { LimitsCard(state.usage, state.streakDays) }
@@ -123,6 +125,23 @@ private fun OverrideBanner() {
         Spacer(Modifier.height(6.dp))
         Text(
             "Blocking is disabled from Home Assistant. Flip the switch back to resume.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onPrimaryContainer,
+        )
+    }
+}
+
+@Composable
+private fun VacationBanner() {
+    AnchorCard(
+        containerColor = MaterialTheme.colorScheme.primaryContainer,
+        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+        borderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.4f),
+    ) {
+        Eyebrow("Vacation mode", color = MaterialTheme.colorScheme.onPrimaryContainer)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Home is your vacation place, checked with this phone's location. Turn it off in Settings when you're back.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onPrimaryContainer,
         )

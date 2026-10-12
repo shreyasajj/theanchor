@@ -1,9 +1,8 @@
 package com.anchor.domain
 
 import com.anchor.data.db.DailyLogDao
-import com.anchor.data.ha.HomeAssistantClient
+import com.anchor.data.db.Phase
 import com.anchor.data.ha.KillSwitch
-import com.anchor.data.ha.LocationGate
 import com.anchor.data.ha.Presence
 import com.anchor.data.settings.AnchorSettings
 import com.anchor.data.settings.SettingsProvider
@@ -25,7 +24,7 @@ sealed interface EveningDecision {
 class EveningGate @Inject constructor(
     private val settingsProvider: SettingsProvider,
     private val dailyLogDao: DailyLogDao,
-    private val client: HomeAssistantClient,
+    private val presence: PresenceResolver,
     private val killSwitch: KillSwitch,
     private val anchorDate: AnchorDate,
 ) {
@@ -71,12 +70,7 @@ class EveningGate @Inject constructor(
             return EveningDecision.Allow(SkipReason.OVERRIDE_ACTIVE)
         }
 
-        val presence = LocationGate.evaluate(
-            result = client.fetchDeviceTracker(settings),
-            mode = settings.eveningLocationMode,
-            allowedRooms = settings.eveningAllowedRooms,
-        )
-        return when (presence) {
+        return when (presence.resolve(settings, Phase.EVENING)) {
             Presence.IN_SCOPE -> EveningDecision.Strict
             // A confirmed "away" always gets the lighter treatment.
             Presence.OUT_OF_SCOPE -> EveningDecision.SimpleDelay

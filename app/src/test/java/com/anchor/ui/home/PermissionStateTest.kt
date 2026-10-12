@@ -79,4 +79,27 @@ class PermissionStateTest {
             assertThat(PermissionState.reason(it)).isNotEmpty()
         }
     }
+
+    @Test
+    fun `location is not listed when the setup does not use it`() {
+        assertThat(all.copy(locationNeeded = false, locationGranted = false).missing)
+            .doesNotContain(PermissionState.LOCATION)
+    }
+
+    @Test
+    fun `location is listed when needed and not granted all the time`() {
+        val state = all.copy(locationNeeded = true, locationGranted = false)
+        assertThat(state.missing).contains("Location (all the time)")
+        assertThat(state.isFullyConfigured).isFalse()
+    }
+
+    @Test
+    fun `location does not gate basic enforcement`() {
+        assertThat(all.copy(locationNeeded = true, locationGranted = false).canEnforce).isTrue()
+    }
+
+    @Test
+    fun `location has a reason`() {
+        assertThat(PermissionState.reason(PermissionState.LOCATION)).isNotEmpty()
+    }
 }

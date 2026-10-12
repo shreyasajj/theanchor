@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.test.core.app.ApplicationProvider
 import app.cash.turbine.test
 import com.anchor.data.export.NoteFormat
+import com.anchor.data.location.SavedPlace
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -127,5 +128,50 @@ class SettingsRepositoryTest {
         repo.update { it.copy(morningAllowedRooms = parseRoomList(" Bedroom ,, Office ,")) }
         assertThat(repo.current().morningAllowedRooms)
             .containsExactly("Bedroom", "Office").inOrder()
+    }
+
+    @Test
+    fun `location settings have the documented defaults`() = runTest {
+        val s = repo.current()
+        assertThat(s.locationSource).isEqualTo(LocationSource.HOME_ASSISTANT)
+        assertThat(s.homePlace).isNull()
+        assertThat(s.vacationMode).isFalse()
+        assertThat(s.vacationPlace).isNull()
+        assertThat(s.morningHomeStates).containsExactly("home")
+        assertThat(s.eveningHomeStates).containsExactly("home")
+    }
+
+    @Test
+    fun `location settings round-trip`() = runTest {
+        repo.update {
+            it.copy(
+                locationSource = LocationSource.PHONE,
+                homePlace = SavedPlace(37.7749, -122.4194, 200),
+                vacationMode = true,
+                vacationPlace = SavedPlace(-33.8688, 151.2093, 75),
+                morningHomeStates = listOf("home", "Bedroom"),
+                eveningHomeStates = listOf("Office"),
+            )
+        }
+        val s = repo.current()
+        assertThat(s.locationSource).isEqualTo(LocationSource.PHONE)
+        assertThat(s.homePlace).isEqualTo(SavedPlace(37.7749, -122.4194, 200))
+        assertThat(s.vacationMode).isTrue()
+        assertThat(s.vacationPlace).isEqualTo(SavedPlace(-33.8688, 151.2093, 75))
+        assertThat(s.morningHomeStates).containsExactly("home", "Bedroom").inOrder()
+        assertThat(s.eveningHomeStates).containsExactly("Office")
+    }
+
+    @Test
+    fun `clearing a place removes it`() = runTest {
+        repo.update { it.copy(homePlace = SavedPlace(1.0, 2.0)) }
+        repo.update { it.copy(homePlace = null) }
+        assertThat(repo.current().homePlace).isNull()
+    }
+
+    @Test
+    fun `an emptied state list is stored as empty, not reset to the default`() = runTest {
+        repo.update { it.copy(morningHomeStates = emptyList()) }
+        assertThat(repo.current().morningHomeStates).isEmpty()
     }
 }

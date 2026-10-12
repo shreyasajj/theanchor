@@ -10,6 +10,10 @@ import com.anchor.data.ha.HaStateDto
 import com.anchor.data.ha.KillSwitch
 import com.anchor.data.settings.AnchorSettings
 import com.anchor.data.settings.LocationMode
+import com.anchor.data.location.FakePhoneLocationSource
+import com.anchor.data.location.SavedPlace
+import com.anchor.data.location.fixAt
+import com.anchor.data.settings.LocationSource
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
@@ -66,13 +70,14 @@ class EveningGateTest {
         instant: Instant = nightInstant,
         settings: AnchorSettings = configured(),
         haStates: Map<String, HaResult> = mapOf("device_tracker.pixel" to state("home")),
+        phone: FakePhoneLocationSource = FakePhoneLocationSource(),
     ): EveningGate {
         val client = FakeHaClient(haStates)
         val clock = Clock.fixed(instant, zone)
         return EveningGate(
             settingsProvider = { settings },
             dailyLogDao = db.dailyLogDao(),
-            client = client,
+            presence = PresenceResolver(client, phone),
             killSwitch = KillSwitch(client),
             anchorDate = AnchorDate(clock),
         )
@@ -236,5 +241,36 @@ class EveningGateTest {
         val settings = configured().copy(blockedPackages = configured().blockedPackages + "com.anchor")
         assertThat(gate(settings = settings).decide("com.anchor"))
             .isEqualTo(EveningDecision.Allow(SkipReason.NOT_IN_SCOPE))
+    }
+
+    // --- Phone location ---
+
+    private val home = SavedPlace(37.7749, -122.4194, 150)
+
+    @Test
+    fun `phone source is strict at the home place`() = runTest {
+        val g = gate(
+            settings = configured().copy(locationSource = LocationSource.PHONE, homePlace = home),
+            phone = FakePhoneLocationSource(fixAt(37.7749, -122.4194)),
+        )
+        assertThat(g.decide(youtube)).isEqualTo(EveningDecision.Strict)
+    }
+
+    @Test
+    fun `phone source is a simple delay away from home`() = runTest {
+        val g = gate(
+            settings = configured().copy(locationSource = LocationSource.PHONE, homePlace = home),
+            phone = FakePhoneLocationSource(fixAt(39.0968, -120.0324)),
+        )
+        assertThat(g.decide(youtube)).isEqualTo(EveningDecision.SimpleDelay)
+    }
+
+    @Test
+    fun `FAIL-OPEN - phone source with no fix is a simple delay`() = runTest {
+        val g = gate(
+            settings = configured().copy(locationSource = LocationSource.PHONE, homePlace = home),
+            phone = FakePhoneLocationSource(null),
+        )
+        assertThat(g.decide(youtube)).isEqualTo(EveningDecision.SimpleDelay)
     }
 }
