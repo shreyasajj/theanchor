@@ -186,11 +186,25 @@ Under **Settings → Location** you can skip Home Assistant for location entirel
   home, checked with the phone's location, and Home Assistant is not asked where
   you are. Turn it on before saving a place and nothing changes.
 
-Both need location set to **Allow all the time**, because the checks run in the
-background; the dashboard lists it under Setup when it is missing. A check uses a
-location reading up to 10 minutes old, or waits up to 5 seconds for a new one;
-**Use current location** always waits for a new one. The kill switch still comes
-from Home Assistant in every mode.
+Both need **precise** location set to **Allow all the time**, because the checks
+run in the background. Approximate location blurs readings to about 2 km, too
+coarse to tell home from the next street, so the app asks for precise instead.
+Saving a place goes on to ask for "all the time" if it is missing, and the
+dashboard lists it under Setup until it is granted. If Android has stopped
+asking (you denied it twice), the Setup button opens the app's settings page,
+the only place it can still be turned on.
+
+How readings are taken:
+
+- A check uses a cached reading up to 10 minutes old that is precise to 500 m,
+  or waits up to 5 seconds for a new one.
+- If that wait comes back empty, say indoors on a GPS-only phone, checks in the
+  next 45 seconds do not wait again; they treat your location as unknown.
+- **Use current location** always waits for a new reading, up to 15 seconds.
+  The button reads **Locating…** meanwhile, and nothing is saved from a vague
+  or missing reading.
+
+The kill switch still comes from Home Assistant in every mode.
 
 Create a long-lived access token from your Home Assistant profile page and put the
 URL, token and device tracker entity into Settings.

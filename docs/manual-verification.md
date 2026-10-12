@@ -225,8 +225,10 @@ and verify the fail-open behaviour returns.
 ## 7j. Phone location, state lists and vacation mode
 
 1. In Settings → Location pick **This phone**, tap **Use current location** and
-   grant location. Verify the coordinates appear and the dashboard Setup card lists
-   "Location (all the time)"; grant it from there (Android opens a settings page).
+   grant precise location. Verify the button reads "Locating…" (the vacation
+   button stays disabled), the coordinates appear, and Android then asks for
+   "Allow all the time". Decline it: the dashboard Setup card lists
+   "Location (all the time)"; grant it from there.
 2. With the HA URL cleared, trigger the morning check (section 4). Verify it locks.
    Set the radius to 25 and the home place to a spot over 1 km away
    (`adb emu geo fix <lon> <lat>` on an emulator), trigger again: verify it skips.
@@ -239,6 +241,10 @@ and verify the fail-open behaviour returns.
    and behaviour is unchanged. Save a vacation place: verify the "Vacation mode"
    banner appears, and the morning lock fires there while HA says `not_home`.
 6. With vacation mode on, flip the HA kill switch: verify blocking is skipped.
+7. Reinstall, tap **Use current location** and choose **Approximate**. Verify the
+   message asks for Precise location and nothing is saved. Deny location twice,
+   then tap the Setup card's location item: verify the app's Android settings
+   page opens.
 
 On the bundled `anchor-test` emulator, `geo fix` did not reach the GNSS provider
 (2026-10-11), so a fresh **Use current location** times out there with
