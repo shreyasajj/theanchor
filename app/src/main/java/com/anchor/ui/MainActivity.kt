@@ -30,6 +30,7 @@ import androidx.navigation.compose.rememberNavController
 import com.anchor.data.db.CustomQuestionDao
 import com.anchor.data.db.DailyLogDao
 import com.anchor.data.ha.KillSwitch
+import com.anchor.data.location.PhoneLocationSource
 import com.anchor.data.settings.AnchorSettings
 import com.anchor.data.settings.SettingsRepository
 import com.anchor.data.usage.AppLimitDao
@@ -46,6 +47,7 @@ import com.anchor.ui.home.DashboardScreen
 import com.anchor.ui.home.DashboardViewModel
 import com.anchor.ui.home.PermissionState
 import com.anchor.ui.settings.InstalledAppsRepository
+import com.anchor.ui.settings.PlaceTarget
 import com.anchor.ui.settings.SettingsScreen
 import com.anchor.ui.settings.SettingsViewModel
 import com.anchor.ui.theme.AnchorTheme
@@ -75,6 +77,10 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var enforcer: LockdownEnforcer
     @Inject lateinit var scheduler: MorningAlarmScheduler
     @Inject lateinit var installedApps: InstalledAppsRepository
+    @Inject lateinit var phoneLocation: PhoneLocationSource
+
+    /** The place waiting on a location permission answer; lost on recreation, which only means tapping again. */
+    private var pendingPlace: PlaceTarget? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -89,6 +95,7 @@ class MainActivity : ComponentActivity() {
                     questionDao = questionDao,
                     appLimitDao = appLimitDao,
                     onScheduleChanged = { rescheduleMorningAlarm() },
+                    currentFix = { phoneLocation.current(freshOnly = true) },
                 )
             },
         )[SettingsViewModel::class.java]
@@ -149,6 +156,15 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                val placeLocationPermission = rememberLauncherForActivityResult(
+                    ActivityResultContracts.RequestMultiplePermissions()
+                ) { granted ->
+                    val target = pendingPlace ?: return@rememberLauncherForActivityResult
+                    pendingPlace = null
+                    if (granted.values.any { it }) settingsViewModel.capturePlace(target)
+                    else settingsViewModel.reportLocationDenied()
+                }
+
                 NavHost(navController = navController, startDestination = "dashboard") {
                     composable("dashboard") {
                         val state by dashboardViewModel.state.collectAsState()
@@ -201,6 +217,14 @@ class MainActivity : ComponentActivity() {
                             viewModel = settingsViewModel,
                             installedApps = installedApps,
                             onPickExportFolder = { folderPicker.launch(null) },
+                            onCapturePlace = { target ->
+                                if (hasForegroundLocation()) {
+                                    settingsViewModel.capturePlace(target)
+                                } else {
+                                    pendingPlace = target
+                                    placeLocationPermission.launch(FOREGROUND_LOCATION)
+                                }
+                            },
                             onBack = {
                                 dashboardViewModel.refresh()
                                 navController.popBackStack()

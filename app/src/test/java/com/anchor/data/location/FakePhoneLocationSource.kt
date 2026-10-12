@@ -5,7 +5,7 @@ class FakePhoneLocationSource(var fix: PhoneFix? = null) : PhoneLocationSource {
     var calls = 0
         private set
 
-    override suspend fun current(): PhoneFix? {
+    override suspend fun current(freshOnly: Boolean): PhoneFix? {
         calls++
         return fix
     }

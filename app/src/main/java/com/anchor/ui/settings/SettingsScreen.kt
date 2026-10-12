@@ -32,6 +32,7 @@ import com.anchor.ui.settings.sections.EveningSection
 import com.anchor.ui.settings.sections.ExportSection
 import com.anchor.ui.settings.sections.HomeAssistantSection
 import com.anchor.ui.settings.sections.LimitsSection
+import com.anchor.ui.settings.sections.LocationSection
 import com.anchor.ui.settings.sections.QuestionsSection
 import com.anchor.ui.settings.sections.ScheduleSection
 
@@ -40,12 +41,14 @@ fun SettingsScreen(
     viewModel: SettingsViewModel,
     installedApps: InstalledAppsRepository,
     onPickExportFolder: () -> Unit,
+    onCapturePlace: (PlaceTarget) -> Unit,
     onBack: () -> Unit,
 ) {
     val settings by viewModel.settings.collectAsState()
     val morningQuestions by viewModel.morningQuestions.collectAsState()
     val eveningQuestions by viewModel.eveningQuestions.collectAsState()
     val limits by viewModel.appLimits.collectAsState()
+    val placeMessage by viewModel.placeMessage.collectAsState()
 
     var apps by remember { mutableStateOf(emptyList<InstalledApp>()) }
     LaunchedEffect(Unit) { apps = installedApps.launchableApps() }
@@ -123,12 +126,22 @@ fun SettingsScreen(
                 onMove = viewModel::moveQuestion,
             ) }
 
+            item { Group("Location") }
+            item { LocationSection(
+                settings = settings,
+                placeMessage = placeMessage,
+                onChange = viewModel::updateSettings,
+                onCapturePlace = onCapturePlace,
+                onSetRadius = viewModel::setPlaceRadius,
+            ) }
+
             item { Group("Home Assistant") }
             item { HomeAssistantSection(
                 settings = settings,
                 onChange = viewModel::updateSettings,
                 onSetRooms = viewModel::setRooms,
                 onSetLocationMode = viewModel::setLocationMode,
+                onSetHomeStates = viewModel::setHomeStates,
             ) }
 
             item { Group("Notes") }

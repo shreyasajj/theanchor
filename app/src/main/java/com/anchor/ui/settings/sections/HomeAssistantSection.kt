@@ -8,6 +8,7 @@ import androidx.compose.ui.unit.dp
 import com.anchor.data.db.Phase
 import com.anchor.data.settings.AnchorSettings
 import com.anchor.data.settings.LocationMode
+import com.anchor.data.settings.PresenceSource
 import com.anchor.data.settings.formatRoomList
 import com.anchor.ui.components.Hint
 import com.anchor.ui.components.SettingRow
@@ -18,6 +19,7 @@ fun HomeAssistantSection(
     onChange: ((AnchorSettings) -> AnchorSettings) -> Unit,
     onSetRooms: (Phase, String) -> Unit,
     onSetLocationMode: (Phase, LocationMode) -> Unit,
+    onSetHomeStates: (Phase, String) -> Unit,
 ) {
     SettingsSection(title = "Home Assistant") {
         TextSetting("Base URL", settings.haBaseUrl, "http://192.168.1.10:8123") { v ->
@@ -30,36 +32,38 @@ fun HomeAssistantSection(
             "Device tracker entity", settings.haDeviceTrackerEntityId,
             "device_tracker.pixel",
         ) { v -> onChange { it.copy(haDeviceTrackerEntityId = v.trim()) } }
-
-        SettingRow(
-            "Ask even without Home Assistant",
-            supporting = "Off: when Home Assistant is not set up or cannot be reached, the morning lock " +
-                "is skipped and the evening shows a 5-second pause. On: the questions are asked anyway. " +
-                "A confirmed \"not home\" always skips.",
-        ) {
-            Switch(
-                checked = settings.enforceWithoutHomeAssistant,
-                onCheckedChange = { on -> onChange { it.copy(enforceWithoutHomeAssistant = on) } },
-            )
-        }
     }
 
     SettingsSection(title = "Morning location") {
+        if (settings.presenceSource != PresenceSource.HOME_ASSISTANT) Hint(PHONE_SOURCE_HINT)
         LocationModePicker(settings.morningLocationMode) { onSetLocationMode(Phase.MORNING, it) }
-        if (settings.morningLocationMode == LocationMode.SPECIFIC_ROOMS) {
-            TextSetting(
-                "Allowed rooms (comma-separated)",
-                formatRoomList(settings.morningAllowedRooms),
-                "Bedroom, Office",
-            ) { onSetRooms(Phase.MORNING, it) }
-            Hint("Matched against the tracker's friendly name, case-insensitively.")
+        when (settings.morningLocationMode) {
+            LocationMode.AT_HOME -> TextSetting(
+                "States that count (comma-separated)",
+                formatRoomList(settings.morningHomeStates),
+                "home, Bedroom, Office",
+            ) { onSetHomeStates(Phase.MORNING, it) }
+            LocationMode.SPECIFIC_ROOMS -> {
+                TextSetting(
+                    "Allowed rooms (comma-separated)",
+                    formatRoomList(settings.morningAllowedRooms),
+                    "Bedroom, Office",
+                ) { onSetRooms(Phase.MORNING, it) }
+                Hint("Matched against the tracker's friendly name, case-insensitively.")
+            }
         }
     }
 
     SettingsSection(title = "Evening location") {
+        if (settings.presenceSource != PresenceSource.HOME_ASSISTANT) Hint(PHONE_SOURCE_HINT)
         LocationModePicker(settings.eveningLocationMode) { onSetLocationMode(Phase.EVENING, it) }
-        if (settings.eveningLocationMode == LocationMode.SPECIFIC_ROOMS) {
-            TextSetting(
+        when (settings.eveningLocationMode) {
+            LocationMode.AT_HOME -> TextSetting(
+                "States that count (comma-separated)",
+                formatRoomList(settings.eveningHomeStates),
+                "home, Bedroom, Living Room",
+            ) { onSetHomeStates(Phase.EVENING, it) }
+            LocationMode.SPECIFIC_ROOMS -> TextSetting(
                 "Restricted rooms (comma-separated)",
                 formatRoomList(settings.eveningAllowedRooms),
                 "Bedroom, Living Room",
@@ -107,16 +111,18 @@ private fun LocationModePicker(current: LocationMode, onPick: (LocationMode) -> 
         selected = current,
         label = {
             when (it) {
-                LocationMode.AT_HOME -> "At home"
+                LocationMode.AT_HOME -> "Entity state"
                 LocationMode.SPECIFIC_ROOMS -> "Specific rooms"
             }
         },
         supporting = {
             when (it) {
-                LocationMode.AT_HOME -> "Anywhere the tracker reports \"home\"."
+                LocationMode.AT_HOME -> "When the tracker's state is one of your states (\"home\" unless you change it)."
                 LocationMode.SPECIFIC_ROOMS -> "Only when the tracker's name contains one of your rooms."
             }
         },
         onPick = onPick,
     )
 }
+
+private const val PHONE_SOURCE_HINT = "Not used right now: your location comes from this phone."

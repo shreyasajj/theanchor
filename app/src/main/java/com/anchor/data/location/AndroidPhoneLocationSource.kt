@@ -22,6 +22,7 @@ import kotlin.coroutines.resume
  * de-Googled phone. A cached fix younger than [MAX_CACHED_AGE_MILLIS]
  * answers instantly; otherwise one fresh fix is requested and abandoned
  * after [FRESH_FIX_TIMEOUT_MILLIS], the same budget as a Home Assistant call.
+ * Saving a place asks for a fresh fix only, and waits longer for it.
  */
 @Singleton
 class AndroidPhoneLocationSource @Inject constructor(
@@ -29,8 +30,8 @@ class AndroidPhoneLocationSource @Inject constructor(
     private val clock: Clock,
 ) : PhoneLocationSource {
 
-    override suspend fun current(): PhoneFix? = try {
-        if (!hasPermission()) null else read()?.toFix()
+    override suspend fun current(freshOnly: Boolean): PhoneFix? = try {
+        if (!hasPermission()) null else read(freshOnly)?.toFix()
     } catch (e: CancellationException) {
         throw e
     } catch (t: Throwable) {
@@ -44,15 +45,16 @@ class AndroidPhoneLocationSource @Inject constructor(
             .any { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED }
 
     @SuppressLint("MissingPermission") // hasPermission() is checked before every read
-    private suspend fun read(): Location? {
+    private suspend fun read(freshOnly: Boolean): Location? {
         val manager = context.getSystemService(LocationManager::class.java) ?: return null
         val enabled = manager.getProviders(true)
 
         val cached = enabled.mapNotNull { manager.getLastKnownLocation(it) }.maxByOrNull { it.time }
-        if (cached != null && clock.millis() - cached.time <= MAX_CACHED_AGE_MILLIS) return cached
+        if (cacheUsable(cached?.time, clock.millis(), freshOnly)) return cached
 
         val provider = PROVIDER_PREFERENCE.firstOrNull { it in enabled } ?: return null
-        return withTimeoutOrNull(FRESH_FIX_TIMEOUT_MILLIS) {
+        val timeout = if (freshOnly) CAPTURE_TIMEOUT_MILLIS else FRESH_FIX_TIMEOUT_MILLIS
+        return withTimeoutOrNull(timeout) {
             suspendCancellableCoroutine<Location?> { cont ->
                 val signal = CancellationSignal()
                 cont.invokeOnCancellation { signal.cancel() }
@@ -71,6 +73,12 @@ class AndroidPhoneLocationSource @Inject constructor(
     companion object {
         const val MAX_CACHED_AGE_MILLIS = 10L * 60 * 1000
         const val FRESH_FIX_TIMEOUT_MILLIS = 5_000L
+
+        /** Someone is waiting on a button, not a blocked app; give GPS time to fix. */
+        const val CAPTURE_TIMEOUT_MILLIS = 15_000L
+
+        fun cacheUsable(fixTimeMillis: Long?, nowMillis: Long, freshOnly: Boolean): Boolean =
+            !freshOnly && fixTimeMillis != null && nowMillis - fixTimeMillis <= MAX_CACHED_AGE_MILLIS
 
         /** Fused is quickest indoors; GPS last because it may never fix inside a house. */
         private val PROVIDER_PREFERENCE = listOf(
