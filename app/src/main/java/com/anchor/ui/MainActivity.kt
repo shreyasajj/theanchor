@@ -1,5 +1,6 @@
 package com.anchor.ui
 
+import android.Manifest
 import android.app.AppOpsManager
 import android.content.Context
 import android.content.Intent
@@ -29,6 +30,7 @@ import androidx.navigation.compose.rememberNavController
 import com.anchor.data.db.CustomQuestionDao
 import com.anchor.data.db.DailyLogDao
 import com.anchor.data.ha.KillSwitch
+import com.anchor.data.settings.AnchorSettings
 import com.anchor.data.settings.SettingsRepository
 import com.anchor.data.usage.AppLimitDao
 import com.anchor.data.usage.MeditationSessionDao
@@ -53,6 +55,11 @@ import javax.inject.Inject
 
 /** How often the dashboard re-reads usage while it is in front. */
 private const val DASHBOARD_TICK_MILLIS = 5_000L
+
+private val FOREGROUND_LOCATION = arrayOf(
+    Manifest.permission.ACCESS_FINE_LOCATION,
+    Manifest.permission.ACCESS_COARSE_LOCATION,
+)
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -97,7 +104,7 @@ class MainActivity : ComponentActivity() {
                     limitGate = limitGate,
                     meditationDao = meditationDao,
                     appLabels = { installedApps.launchableApps().associate { it.packageName to it.label } },
-                    readPermissions = { treeUri -> readPermissions(treeUri) },
+                    readPermissions = { settings -> readPermissions(settings) },
                 )
             },
         )[DashboardViewModel::class.java]
@@ -125,6 +132,22 @@ class MainActivity : ComponentActivity() {
                 val notificationPermission = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestPermission()
                 ) { dashboardViewModel.refresh() }
+
+                // Android grants "all the time" only as a second step after
+                // foreground location, and shows it as a settings page.
+                val backgroundLocationPermission = rememberLauncherForActivityResult(
+                    ActivityResultContracts.RequestPermission()
+                ) { dashboardViewModel.refresh() }
+
+                val foregroundLocationPermission = rememberLauncherForActivityResult(
+                    ActivityResultContracts.RequestMultiplePermissions()
+                ) { granted ->
+                    if (granted.values.any { it }) {
+                        backgroundLocationPermission.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+                    } else {
+                        dashboardViewModel.refresh()
+                    }
+                }
 
                 NavHost(navController = navController, startDestination = "dashboard") {
                     composable("dashboard") {
@@ -163,6 +186,12 @@ class MainActivity : ComponentActivity() {
                                         android.Manifest.permission.POST_NOTIFICATIONS
                                     )
                                     PermissionState.EXPORT_FOLDER -> folderPicker.launch(null)
+                                    PermissionState.LOCATION ->
+                                        if (hasForegroundLocation()) {
+                                            backgroundLocationPermission.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+                                        } else {
+                                            foregroundLocationPermission.launch(FOREGROUND_LOCATION)
+                                        }
                                 }
                             },
                         )
@@ -187,17 +216,24 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch { scheduler.schedule(settingsRepository.current()) }
     }
 
-    private fun readPermissions(exportTreeUri: String?) = PermissionState(
+    private fun readPermissions(settings: AnchorSettings) = PermissionState(
         accessibilityEnabled = isAccessibilityServiceEnabled(),
         overlayGranted = Settings.canDrawOverlays(this),
         usageStatsGranted = hasUsageStatsPermission(),
-        notificationsGranted = ContextCompat.checkSelfPermission(
-            this, android.Manifest.permission.POST_NOTIFICATIONS
-        ) == PackageManager.PERMISSION_GRANTED,
-        exportFolderChosen = exportTreeUri != null && runCatching {
-            contentResolver.persistedUriPermissions.any { it.uri.toString() == exportTreeUri && it.isWritePermission }
+        notificationsGranted = granted(Manifest.permission.POST_NOTIFICATIONS),
+        exportFolderChosen = settings.exportTreeUri != null && runCatching {
+            contentResolver.persistedUriPermissions.any {
+                it.uri.toString() == settings.exportTreeUri && it.isWritePermission
+            }
         }.getOrDefault(false),
+        locationNeeded = settings.usesPhoneLocation,
+        locationGranted = granted(Manifest.permission.ACCESS_BACKGROUND_LOCATION),
     )
+
+    private fun granted(permission: String): Boolean =
+        ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
+
+    private fun hasForegroundLocation(): Boolean = FOREGROUND_LOCATION.any { granted(it) }
 
     private fun isAccessibilityServiceEnabled(): Boolean {
         val expected = "$packageName/${AnchorAccessibilityService::class.java.name}"
