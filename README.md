@@ -268,13 +268,36 @@ the default.
 Requires JDK 17 and an Android SDK with platform 35. `minSdk` is 33.
 
 ```bash
-./gradlew :app:testDebugUnitTest      # 398 JVM unit tests, no device needed
+./gradlew :app:testDebugUnitTest      # 584 JVM unit tests, no device needed
 ./gradlew :app:assembleRelease        # app/build/outputs/apk/release/app-release.apk
 ./gradlew :app:installRelease         # sideload to a connected device
 ```
 
 Use the **release** APK for daily use. Debug Compose is noticeably slower to scroll.
-Release is signed with the debug key, so it installs without a keystore of your own.
+
+### Signing, and why updates install
+
+Android installs an update only when it is signed with the same key as the app
+already on the phone; otherwise it says the app cannot be updated. Release builds
+are therefore signed with one fixed key:
+
+- **CI** reads it from the repository secrets `ANCHOR_KEYSTORE_BASE64`,
+  `ANCHOR_KEYSTORE_PASSWORD`, `ANCHOR_KEY_ALIAS` and `ANCHOR_KEY_PASSWORD`, and
+  numbers each build's `versionCode` with the run number.
+- **Locally** Gradle reads `~/.android/anchor-release.properties` (`storeFile`,
+  `storePassword`, `keyAlias`, `keyPassword`). Without it, or without the secrets,
+  release falls back to the per-machine debug key and that APK installs only fresh.
+
+Back up `~/.android/anchor-release.jks` and its properties file somewhere safe. If
+the key is lost, the next build cannot update the installed app: uninstall it
+(settings and history inside the app are lost; exported Markdown notes are not)
+and install the new one.
+
+Builds before 2026-10-12 were each signed with a throwaway key, so moving from one
+of them to a newer build needs that one-time uninstall. A local build is
+`versionCode` 1, so it cannot replace a CI build either; uninstall first.
+
+Debug APKs are still signed per machine: use them for fresh installs only.
 
 If Gradle cannot find the SDK, set `sdk.dir` in `local.properties`.
 

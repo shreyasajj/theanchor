@@ -48,9 +48,26 @@ jobs:
           path: app/build/reports/tests/testDebugUnitTest
           retention-days: 14
 
+      - name: Set up the release key
+        # Android installs an update only when it carries the same signature
+        # as the installed app, so release is signed with one fixed key kept
+        # in repository secrets. Without them (Dependabot, a fork) the build
+        # falls back to a throwaway debug key and says so.
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANCHOR_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/anchor-release.jks"
+            echo "ANCHOR_KEYSTORE_FILE=$RUNNER_TEMP/anchor-release.jks" >> "$GITHUB_ENV"
+          else
+            echo "::warning::No release key secret: this APK is signed with a throwaway key and will not install over an existing app."
+          fi
+
       - name: Build APKs
-        # Release is signed with the debug key; AGP generates that keystore on
-        # first use, so no secrets are needed to produce an installable APK.
+        env:
+          ANCHOR_KEYSTORE_PASSWORD: ${{ secrets.ANCHOR_KEYSTORE_PASSWORD }}
+          ANCHOR_KEY_ALIAS: ${{ secrets.ANCHOR_KEY_ALIAS }}
+          ANCHOR_KEY_PASSWORD: ${{ secrets.ANCHOR_KEY_PASSWORD }}
         run: ./gradlew :app:assembleDebug :app:assembleRelease --no-daemon
 
       - name: Name the APKs
@@ -88,7 +105,7 @@ jobs:
             --notes "$notes" \
             --latest \
             "artifacts/${NAME}.apk#The Anchor (release, sideload this one)" \
-            "artifacts/${NAME}-debug.apk#The Anchor (debug)"
+            "artifacts/${NAME}-debug.apk#The Anchor (debug, fresh install only)"
 
   dependency-graph:
     name: Submit dependency graph

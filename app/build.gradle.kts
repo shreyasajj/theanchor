@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -7,6 +9,30 @@ plugins {
     alias(libs.plugins.hilt)
 }
 
+/**
+ * The release key. Android installs an update only when it carries the same
+ * signature as the installed app, so every build must use one fixed key. CI
+ * passes it in through ANCHOR_* environment variables (from repository
+ * secrets); on a developer machine it is read from
+ * ~/.android/anchor-release.properties. With neither, release falls back to
+ * the debug key, which is created per machine: such a build installs only
+ * fresh, never over an existing one.
+ */
+val releaseKey: Map<String, String>? =
+    System.getenv("ANCHOR_KEYSTORE_FILE")?.takeIf { it.isNotBlank() }?.let { file ->
+        mapOf(
+            "storeFile" to file,
+            "storePassword" to System.getenv("ANCHOR_KEYSTORE_PASSWORD").orEmpty(),
+            "keyAlias" to System.getenv("ANCHOR_KEY_ALIAS").orEmpty(),
+            "keyPassword" to System.getenv("ANCHOR_KEY_PASSWORD").orEmpty(),
+        )
+    } ?: File(System.getProperty("user.home"), ".android/anchor-release.properties")
+        .takeIf { it.isFile }
+        ?.let { file ->
+            val props = Properties().apply { file.inputStream().use { load(it) } }
+            props.stringPropertyNames().associateWith { props.getProperty(it) }
+        }
+
 android {
     namespace = "com.anchor"
     compileSdk = 35
@@ -15,8 +41,20 @@ android {
         applicationId = "com.anchor"
         minSdk = 33
         targetSdk = 35
-        versionCode = 1
+        // CI numbers each build so every update is a step up; local builds stay 1.
+        versionCode = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
         versionName = "1.0"
+    }
+
+    signingConfigs {
+        if (releaseKey != null) {
+            create("release") {
+                storeFile = file(releaseKey.getValue("storeFile"))
+                storePassword = releaseKey.getValue("storePassword")
+                keyAlias = releaseKey.getValue("keyAlias")
+                keyPassword = releaseKey.getValue("keyPassword")
+            }
+        }
     }
 
     buildTypes {
@@ -24,7 +62,7 @@ android {
             // Personal sideload: keep stack traces readable, but ship a real
             // release build. Debug Compose is markedly slower to scroll.
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
     compileOptions {
