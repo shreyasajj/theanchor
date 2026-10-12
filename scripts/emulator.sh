@@ -11,7 +11,7 @@
 # exports them (see app/src/debug/AndroidManifest.xml). The release APK does not.
 set -euo pipefail
 
-export JAVA_HOME="${JAVA_HOME:-/opt/homebrew/opt/openjdk@17}"
+export JAVA_HOME="${JAVA_HOME:-/opt/homebrew/opt/openjdk@25}"
 export ANDROID_HOME="${ANDROID_HOME:-/opt/homebrew/share/android-commandlinetools}"
 # avdmanager and friends look for `java` on PATH, not in JAVA_HOME.
 export PATH="$JAVA_HOME/bin:$PATH"

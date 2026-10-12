@@ -75,7 +75,7 @@ object AppModule {
             // Versions 1 and 2 predate any install that was kept; anything
             // from 3 on migrates, so an update never loses the questions or
             // the daily log again.
-            .fallbackToDestructiveMigrationFrom(1, 2)
+            .fallbackToDestructiveMigrationFrom(dropAllTables = false, 1, 2)
             .build()
 
     @Provides fun provideDailyLogDao(db: AnchorDatabase): DailyLogDao = db.dailyLogDao()

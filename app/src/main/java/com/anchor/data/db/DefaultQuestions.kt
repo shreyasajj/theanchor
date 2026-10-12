@@ -50,7 +50,7 @@ object DefaultQuestions {
             db.execSQL(
                 "INSERT INTO custom_question (phase, slotKey, prompt, sortOrder, enabled) " +
                     "VALUES (?, ?, ?, ?, 1)",
-                arrayOf(q.phase.name, q.slotKey, q.prompt, q.sortOrder),
+                arrayOf<Any>(q.phase.name, q.slotKey, q.prompt, q.sortOrder),
             )
         }
     }

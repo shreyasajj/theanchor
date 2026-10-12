@@ -279,7 +279,7 @@ the default.
 
 ## Install
 
-Requires JDK 17 and an Android SDK with platform 35. `minSdk` is 33.
+Requires JDK 25 (the current Java LTS) and an Android SDK with platform 35. `minSdk` is 33.
 
 ```bash
 ./gradlew :app:testDebugUnitTest      # 618 JVM unit tests, no device needed

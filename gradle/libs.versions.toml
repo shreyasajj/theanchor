@@ -1,9 +1,9 @@
 [versions]
-agp = "8.7.2"
-kotlin = "2.0.21"
-ksp = "2.0.21-1.0.25"
-hilt = "2.52"
-room = "2.6.1"
+agp = "9.4.1"
+kotlin = "2.4.21"
+ksp = "2.3.12"
+hilt = "2.60.1"
+room = "2.8.5"
 composeBom = "2024.09.03"
 lifecycle = "2.8.6"
 retrofit = "2.11.0"
@@ -11,10 +11,12 @@ okhttp = "4.12.0"
 serialization = "1.7.3"
 datastore = "1.1.1"
 documentfile = "1.0.1"
-robolectric = "4.13"
+robolectric = "4.17"
 turbine = "1.1.0"
 truth = "1.4.4"
 coroutines = "1.9.0"
+# Build-classpath floors for libraries AGP pulls in; see the root build.gradle.kts.
+bouncycastle = "1.86"
 
 [libraries]
 androidx-core-ktx = { module = "androidx.core:core-ktx", version = "1.13.1" }
@@ -48,9 +50,16 @@ turbine = { module = "app.cash.turbine:turbine", version.ref = "turbine" }
 robolectric = { module = "org.robolectric:robolectric", version.ref = "robolectric" }
 androidx-test-core = { module = "androidx.test:core-ktx", version = "1.6.1" }
 
+# Build classpath only (never in the APK). Declared here so Dependabot can
+# see and bump them; the root build.gradle.kts turns them into constraints.
+buildscript-bcprov = { module = "org.bouncycastle:bcprov-jdk18on", version.ref = "bouncycastle" }
+buildscript-bcpkix = { module = "org.bouncycastle:bcpkix-jdk18on", version.ref = "bouncycastle" }
+buildscript-bcutil = { module = "org.bouncycastle:bcutil-jdk18on", version.ref = "bouncycastle" }
+buildscript-jose4j = { module = "org.bitbucket.b_c:jose4j", version = "0.9.7" }
+buildscript-jdom2 = { module = "org.jdom:jdom2", version = "2.0.6.1" }
+
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
-kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
