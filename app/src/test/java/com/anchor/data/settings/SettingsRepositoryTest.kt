@@ -174,4 +174,36 @@ class SettingsRepositoryTest {
         repo.update { it.copy(morningHomeStates = emptyList()) }
         assertThat(repo.current().morningHomeStates).isEmpty()
     }
+
+    @Test
+    fun `bedroom settings have the documented defaults`() = runTest {
+        val s = repo.current()
+        assertThat(s.bedroomBlockEnabled).isFalse()
+        assertThat(s.bedroomRooms).containsExactly("Bedroom")
+        assertThat(s.bedroomStartMinute).isEqualTo(22 * 60)
+        assertThat(s.bedroomEndMinute).isEqualTo(7 * 60)
+    }
+
+    @Test
+    fun `bedroom settings round-trip`() = runTest {
+        repo.update {
+            it.copy(
+                bedroomBlockEnabled = true,
+                bedroomRooms = listOf("Bedroom", "Guest Room"),
+                bedroomStartMinute = 21 * 60 + 30,
+                bedroomEndMinute = 6 * 60,
+            )
+        }
+        val s = repo.current()
+        assertThat(s.bedroomBlockEnabled).isTrue()
+        assertThat(s.bedroomRooms).containsExactly("Bedroom", "Guest Room").inOrder()
+        assertThat(s.bedroomStartMinute).isEqualTo(21 * 60 + 30)
+        assertThat(s.bedroomEndMinute).isEqualTo(6 * 60)
+    }
+
+    @Test
+    fun `an emptied bedroom room list stays empty`() = runTest {
+        repo.update { it.copy(bedroomRooms = emptyList()) }
+        assertThat(repo.current().bedroomRooms).isEmpty()
+    }
 }

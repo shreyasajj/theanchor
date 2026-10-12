@@ -68,6 +68,17 @@ data class AnchorSettings(
     val vacationMode: Boolean = false,
     val vacationPlace: SavedPlace? = null,
 
+    // --- Bedroom block ---
+    /**
+     * During [bedroomStartMinute]–[bedroomEndMinute], blocked apps do not
+     * open at all while Home Assistant places you in one of [bedroomRooms],
+     * even after the evening questions. Only a confirmed room reading blocks.
+     */
+    val bedroomBlockEnabled: Boolean = false,
+    val bedroomRooms: List<String> = listOf("Bedroom"),
+    val bedroomStartMinute: Int = 22 * 60,
+    val bedroomEndMinute: Int = 7 * 60,
+
     /**
      * When the location cannot be read (Home Assistant not configured or
      * unreachable, or no usable phone fix), still ask the questions. Off by
