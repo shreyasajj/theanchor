@@ -9,6 +9,10 @@ import com.anchor.data.ha.HaStateDto
 import com.anchor.data.ha.KillSwitch
 import com.anchor.data.settings.AnchorSettings
 import com.anchor.data.usage.MeditationSession
+import com.anchor.data.location.FakePhoneLocationSource
+import com.anchor.data.location.SavedPlace
+import com.anchor.data.location.fixAt
+import com.anchor.data.settings.LocationSource
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.test.runTest
 import org.junit.After
@@ -56,12 +60,13 @@ class EveningSitGateTest {
         instant: Instant = eveningInstant,
         settings: AnchorSettings = configured(),
         haStates: Map<String, HaResult> = mapOf("device_tracker.pixel" to state("home")),
+        phone: FakePhoneLocationSource = FakePhoneLocationSource(),
     ): EveningSitGate {
         val client = FakeHaClient(haStates)
         return EveningSitGate(
             settingsProvider = { settings },
             meditationDao = db.meditationSessionDao(),
-            client = client,
+            presence = PresenceResolver(client, phone),
             killSwitch = KillSwitch(client),
             anchorDate = AnchorDate(Clock.fixed(instant, zone)),
         )
@@ -151,5 +156,27 @@ class EveningSitGateTest {
     @Test
     fun `the requirement is never under a minute`() {
         assertThat(EveningSit.requiredSeconds(AnchorSettings(eveningSitMinutes = 0))).isEqualTo(60)
+    }
+
+    // --- Phone location ---
+
+    private val home = SavedPlace(37.7749, -122.4194, 150)
+
+    @Test
+    fun `phone source holds the sit at the home place`() = runTest {
+        val g = gate(
+            settings = configured().copy(locationSource = LocationSource.PHONE, homePlace = home),
+            phone = FakePhoneLocationSource(fixAt(37.7749, -122.4194)),
+        )
+        assertThat(g.decide()).isInstanceOf(SitDecision.Lock::class.java)
+    }
+
+    @Test
+    fun `phone source skips the sit away from home`() = runTest {
+        val g = gate(
+            settings = configured().copy(locationSource = LocationSource.PHONE, homePlace = home),
+            phone = FakePhoneLocationSource(fixAt(39.0968, -120.0324)),
+        )
+        assertThat(g.decide()).isEqualTo(SitDecision.Skip(SkipReason.NOT_IN_SCOPE))
     }
 }

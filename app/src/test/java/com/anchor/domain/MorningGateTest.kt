@@ -10,6 +10,10 @@ import com.anchor.data.ha.HaStateDto
 import com.anchor.data.ha.KillSwitch
 import com.anchor.data.settings.AnchorSettings
 import com.anchor.data.settings.LocationMode
+import com.anchor.data.location.FakePhoneLocationSource
+import com.anchor.data.location.SavedPlace
+import com.anchor.data.location.fixAt
+import com.anchor.data.settings.LocationSource
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
@@ -56,13 +60,14 @@ class MorningGateTest {
         instant: Instant = morningInstant,
         settings: AnchorSettings = configured(),
         haStates: Map<String, HaResult> = mapOf("device_tracker.pixel" to state("home")),
+        phone: FakePhoneLocationSource = FakePhoneLocationSource(),
     ): Pair<MorningGate, FakeHaClient> {
         val client = FakeHaClient(haStates)
         val clock = Clock.fixed(instant, zone)
         val gate = MorningGate(
             settingsProvider = { settings },
             dailyLogDao = db.dailyLogDao(),
-            client = client,
+            presence = PresenceResolver(client, phone),
             killSwitch = KillSwitch(client),
             anchorDate = AnchorDate(clock),
         )
@@ -230,5 +235,74 @@ class MorningGateTest {
         val (g, client) = gate(instant = afternoonInstant)
         g.decide()
         assertThat(client.calls).isEmpty()
+    }
+
+    // --- Phone location and vacation mode ---
+
+    private val home = SavedPlace(37.7749, -122.4194, 150)
+    private val cabin = SavedPlace(39.0968, -120.0324, 150)
+
+    @Test
+    fun `phone source locks at the home place without asking HA for location`() = runTest {
+        val (g, client) = gate(
+            settings = configured().copy(locationSource = LocationSource.PHONE, homePlace = home),
+            phone = FakePhoneLocationSource(fixAt(37.7749, -122.4194)),
+        )
+        assertThat(g.decide()).isEqualTo(MorningDecision.Lock)
+        assertThat(client.calls).isEmpty()
+    }
+
+    @Test
+    fun `phone source skips away from the home place`() = runTest {
+        val (g, _) = gate(
+            settings = configured().copy(locationSource = LocationSource.PHONE, homePlace = home),
+            phone = FakePhoneLocationSource(fixAt(39.0968, -120.0324)),
+        )
+        assertThat(g.decide()).isEqualTo(MorningDecision.Skip(SkipReason.NOT_IN_SCOPE))
+    }
+
+    @Test
+    fun `FAIL-OPEN - phone source with no fix skips as unknown`() = runTest {
+        val (g, _) = gate(
+            settings = configured().copy(locationSource = LocationSource.PHONE, homePlace = home),
+            phone = FakePhoneLocationSource(null),
+        )
+        assertThat(g.decide()).isEqualTo(MorningDecision.Skip(SkipReason.LOCATION_UNKNOWN))
+    }
+
+    @Test
+    fun `vacation mode locks at the vacation place even when HA says not_home`() = runTest {
+        val (g, _) = gate(
+            settings = configured().copy(vacationMode = true, vacationPlace = cabin),
+            haStates = mapOf("device_tracker.pixel" to state("not_home")),
+            phone = FakePhoneLocationSource(fixAt(39.0968, -120.0324)),
+        )
+        assertThat(g.decide()).isEqualTo(MorningDecision.Lock)
+    }
+
+    @Test
+    fun `the kill switch still applies in vacation mode`() = runTest {
+        val settings = configured().copy(
+            vacationMode = true,
+            vacationPlace = cabin,
+            killSwitchEnabled = true,
+            killSwitchEntityId = "input_boolean.anchor_override",
+            killSwitchOverrideState = "on",
+        )
+        val (g, _) = gate(
+            settings = settings,
+            haStates = mapOf("input_boolean.anchor_override" to state("on")),
+            phone = FakePhoneLocationSource(fixAt(39.0968, -120.0324)),
+        )
+        assertThat(g.decide()).isEqualTo(MorningDecision.Skip(SkipReason.OVERRIDE_ACTIVE))
+    }
+
+    @Test
+    fun `a custom state list locks in a listed room`() = runTest {
+        val (g, _) = gate(
+            settings = configured().copy(morningHomeStates = listOf("Bedroom", "Office")),
+            haStates = mapOf("device_tracker.pixel" to state("Office")),
+        )
+        assertThat(g.decide()).isEqualTo(MorningDecision.Lock)
     }
 }
