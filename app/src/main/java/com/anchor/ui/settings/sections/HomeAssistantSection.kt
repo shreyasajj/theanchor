@@ -71,6 +71,8 @@ fun HomeAssistantSection(
         }
     }
 
+    BedroomSection(settings, onChange)
+
     SettingsSection(title = "Remote kill switch") {
         SettingRow(
             "Enabled",

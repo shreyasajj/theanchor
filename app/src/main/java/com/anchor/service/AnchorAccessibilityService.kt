@@ -6,6 +6,10 @@ import android.view.accessibility.AccessibilityEvent
 import com.anchor.data.settings.SettingsRepository
 import com.anchor.data.usage.AppLimit
 import com.anchor.domain.AnchorDate
+import com.anchor.domain.BedroomDecision
+import com.anchor.domain.BedroomGate
+import com.anchor.domain.BedroomQueries
+import com.anchor.domain.BedroomWatcher
 import com.anchor.domain.EveningDecision
 import com.anchor.domain.EveningGate
 import com.anchor.domain.EveningSitGate
@@ -22,19 +26,20 @@ import com.anchor.domain.PauseLedger
 import com.anchor.domain.SessionCapWatcher
 import com.anchor.domain.SitDecision
 import com.anchor.domain.SkipReason
+import com.anchor.ui.lock.BedroomBlockedActivity
 import com.anchor.ui.lock.ConfirmLockActivity
 import com.anchor.ui.lock.EveningLockActivity
 import com.anchor.ui.lock.LimitBlockedActivity
 import com.anchor.ui.lock.PauseActivity
-import com.anchor.ui.lock.SessionEndScreens
 import com.anchor.ui.lock.PauseCoalescing
+import com.anchor.ui.lock.SessionEndScreens
 import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-import javax.inject.Inject
 
 /** Which screen, if any, a single app launch produces. */
 sealed interface Route {
@@ -119,6 +124,7 @@ class PackageDebounce(private val windowMillis: Long = 3_000) {
 class AnchorAccessibilityService : AccessibilityService() {
 
     @Inject lateinit var eveningGate: EveningGate
+    @Inject lateinit var bedroomGate: BedroomGate
     @Inject lateinit var morningGate: MorningGate
     @Inject lateinit var eveningSitGate: EveningSitGate
     @Inject lateinit var limitGate: LimitGate
@@ -169,6 +175,23 @@ class AnchorAccessibilityService : AccessibilityService() {
                 }
             },
         )
+    }
+
+    private val bedroomWatcher by lazy {
+        BedroomWatcher(
+            scope = scope,
+            queries = object : BedroomQueries {
+                override suspend fun watches(packageName: String) = bedroomGate.watches(packageName)
+                override suspend fun isInForeground(packageName: String) = limitGate.isInForeground(packageName)
+                override suspend fun decide(packageName: String) = bedroomGate.decide(packageName)
+            },
+            onBlocked = { packageName, decision -> showBedroomBlock(packageName, decision) },
+        )
+    }
+
+    private fun showBedroomBlock(packageName: String, decision: BedroomDecision.Block) {
+        relockBubble.hideNow()
+        startActivity(BedroomBlockedActivity.intent(this, packageName, decision.endMinute))
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -231,6 +254,7 @@ class AnchorAccessibilityService : AccessibilityService() {
 
                 is ForegroundAction.ReassertLock -> {
                     sessionCapWatcher.cancel()
+                    bedroomWatcher.cancel()
                     relockBubble.hide()
                     // Bypasses the debounce: escaping the lock must always
                     // bring it straight back, however fast the user taps.
@@ -250,12 +274,22 @@ class AnchorAccessibilityService : AccessibilityService() {
                     // The session cap watches every foreground change, even
                     // debounced ones, so its timer tracks reality.
                     sessionCapWatcher.onForegroundApp(target)
+                    bedroomWatcher.onForegroundApp(target)
 
                     val now = System.currentTimeMillis()
                     val subject = PauseSubject.of(target, limit)
 
                     // Just locked early: the app is on its way out, not in.
                     if (PauseLedger.isIgnored(subject, now)) return@launch
+
+                    // Before the pause ledger and both gates: in the bedroom
+                    // nothing lets a blocked app through, not a pause sat
+                    // elsewhere and not a spent limit's streak door.
+                    val bedroom = bedroomGate.decide(target)
+                    if (bedroom is BedroomDecision.Block) {
+                        showBedroomBlock(target, bedroom)
+                        return@launch
+                    }
 
                     // A pause the user actually sat through lets the app in.
                     // One they walked away from does not, and clears the
@@ -316,6 +350,7 @@ class AnchorAccessibilityService : AccessibilityService() {
     override fun onDestroy() {
         relockBubble.hideNow()
         sessionCapWatcher.cancel()
+        bedroomWatcher.cancel()
         scope.cancel()
         super.onDestroy()
     }
