@@ -244,7 +244,10 @@ class SettingsViewModelTest {
         val old = db.appLimitDao().find(youtube)!!.id
 
         vm.createLimit(setOf(youtube, "com.instagram.android"))
-        awaitUntil { db.appLimitDao().find(youtube)?.id != old }
+        // Wait for the new group, not merely for the old one to go: createLimit
+        // deletes before it inserts, and "not the old id" is also true in the
+        // gap between, when there is no limit at all.
+        awaitUntil { db.appLimitDao().find(youtube)?.let { it.id != old } == true }
 
         assertThat(db.appLimitDao().all()).hasSize(1)   // the emptied group is gone
     }
