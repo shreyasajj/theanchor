@@ -251,6 +251,20 @@ On the bundled `anchor-test` emulator, `geo fix` did not reach the GNSS provider
 "Couldn't get a precise enough location". Steps 1–2 need a real phone or an
 emulator whose location updates.
 
+## 7k. Bedroom block
+
+1. Turn on Bedroom block with hours containing now, a blocked app, and the HA
+   tracker reporting `Bedroom`. Open the app: verify "Not in the bedroom" with the
+   app's name and end time, and that back and the button both reach the home screen.
+2. Answer the evening questions, open the app again in the bedroom: still blocked.
+3. Set the tracker to `Living Room`: the evening questions (or pause) appear instead.
+4. Stop Home Assistant: the app opens under the normal rules, never the bedroom screen.
+5. Open the app in the living room, then set the tracker to `Bedroom`: verify it is
+   closed within 2 minutes.
+6. With a daily limit spent and streak mode on, in the bedroom: the bedroom screen
+   appears, not the limit screen with "Open anyway".
+7. Flip the HA kill switch: the app opens.
+
 ## 8. Persistence across a reboot
 
 ```bash

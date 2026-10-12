@@ -206,6 +206,19 @@ How readings are taken:
 
 The kill switch still comes from Home Assistant in every mode.
 
+### Bedroom block
+
+Home and bed can have different rules. With **Settings → Bedroom block** on, during
+its hours (22:00–07:00 by default) a blocked app does not open at all while Home
+Assistant places you in one of the bedroom rooms (`Bedroom` by default, matched in
+the tracker's name or state). Answering the evening questions does not change that;
+elsewhere at home the questions work as before. An app already open when you walk
+in is closed within 2 minutes. It uses the evening blocked-apps list.
+
+It only blocks on a confirmed reading. If Home Assistant is down, the room is
+unknown, vacation mode is on or the kill switch is flipped, apps open under the
+normal rules. "Ask even when location is unknown" does not make it stricter.
+
 Create a long-lived access token from your Home Assistant profile page and put the
 URL, token and device tracker entity into Settings.
 
@@ -252,6 +265,7 @@ Every uncertain path does **less** blocking, not more:
 | Phone location off, denied, or vaguer than 500 m | skip | 5-second pause | unaffected |
 | Usage access revoked | unaffected | unaffected | nothing blocked |
 | Kill switch on | skip | allow | allow |
+| Bedroom block, Home Assistant unreachable | — | normal evening rules | unaffected |
 
 The single toggle that changes this is **Ask even when location is unknown**. Turn it
 on and an unknown location still shows the questions, which is what you want if you
@@ -268,7 +282,7 @@ the default.
 Requires JDK 17 and an Android SDK with platform 35. `minSdk` is 33.
 
 ```bash
-./gradlew :app:testDebugUnitTest      # 584 JVM unit tests, no device needed
+./gradlew :app:testDebugUnitTest      # 612 JVM unit tests, no device needed
 ./gradlew :app:assembleRelease        # app/build/outputs/apk/release/app-release.apk
 ./gradlew :app:installRelease         # sideload to a connected device
 ```
