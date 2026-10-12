@@ -1,16 +1,16 @@
 // AGP 9.4.1, the latest, still brings these in at versions with published
-// security advisories (Dependabot alerts). They run only on the build
-// machine; none of them reach the APK. Raise them on the build classpath
-// rather than wait for a newer AGP. Bouncy Castle's three modules move
-// together.
+// security advisories. They run only on the build machine; none of them
+// reach the APK. Raise them on the build classpath rather than wait for a
+// newer AGP. The versions live in the version catalog (buildscript-*) so
+// Dependabot can see them and open its security pull requests against them.
 buildscript {
     dependencies {
         constraints {
-            listOf("bcprov", "bcpkix", "bcutil").forEach { module ->
-                classpath("org.bouncycastle:$module-jdk18on:1.86") { because("advisories fixed in 1.84/1.85") }
-            }
-            classpath("org.bitbucket.b_c:jose4j:0.9.7") { because("advisory fixed in 0.9.6") }
-            classpath("org.jdom:jdom2:2.0.6.1") { because("advisory fixed in 2.0.6.1") }
+            classpath(libs.buildscript.bcprov)
+            classpath(libs.buildscript.bcpkix)
+            classpath(libs.buildscript.bcutil)
+            classpath(libs.buildscript.jose4j)
+            classpath(libs.buildscript.jdom2)
         }
     }
 }
