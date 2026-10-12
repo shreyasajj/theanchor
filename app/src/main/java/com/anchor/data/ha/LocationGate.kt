@@ -42,10 +42,10 @@ object LocationGate {
             }
 
             LocationMode.SPECIFIC_ROOMS -> {
-                // The room usually appears in friendly_name (e.g. a per-room
-                // BLE/mmWave tracker). Fall back to the raw state so a
-                // zone-based tracker reporting "Bedroom" also works.
-                val haystack = (state.friendlyName ?: state.state).lowercase()
+                // The room can be in friendly_name (a per-room BLE/mmWave
+                // tracker) or in the state (room-presence integrations name
+                // the device and report the room), so search both.
+                val haystack = listOfNotNull(state.friendlyName, state.state).joinToString(" ").lowercase()
                 val matched = allowedRooms.any { room ->
                     room.isNotBlank() && haystack.contains(room.trim().lowercase())
                 }

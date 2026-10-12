@@ -728,4 +728,16 @@ class LimitGateTest {
         assertThat(usage.status)
             .isEqualTo(LimitStatus.InSession(endsAtMillis = dayStartMillis + 680 * minute, inForeground = true))
     }
+
+    // --- One app in front, not its group ---
+
+    @Test
+    fun `a single app's foreground check ignores the rest of its group`() = runTest {
+        val reddit = "com.reddit.frontpage"
+        db.appLimitDao().upsert(AppLimit(name = "Social", packages = setOf(app, reddit), dailyOpens = 10))
+        val g = gate(events = listOf(fg(60, pkg = reddit)))
+        assertThat(g.isInForeground(app)).isTrue()
+        assertThat(g.isPackageInForeground(app)).isFalse()
+        assertThat(g.isPackageInForeground(reddit)).isTrue()
+    }
 }

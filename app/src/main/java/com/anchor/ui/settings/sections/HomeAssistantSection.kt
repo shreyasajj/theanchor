@@ -49,7 +49,7 @@ fun HomeAssistantSection(
                     formatRoomList(settings.morningAllowedRooms),
                     "Bedroom, Office",
                 ) { onSetRooms(Phase.MORNING, it) }
-                Hint("Matched against the tracker's friendly name, case-insensitively.")
+                Hint("Matched against the tracker's name or state, case-insensitively.")
             }
         }
     }
@@ -70,6 +70,8 @@ fun HomeAssistantSection(
             ) { onSetRooms(Phase.EVENING, it) }
         }
     }
+
+    BedroomSection(settings, onChange)
 
     SettingsSection(title = "Remote kill switch") {
         SettingRow(
@@ -118,7 +120,7 @@ private fun LocationModePicker(current: LocationMode, onPick: (LocationMode) -> 
         supporting = {
             when (it) {
                 LocationMode.AT_HOME -> "When the tracker's state is one of your states (\"home\" unless you change it)."
-                LocationMode.SPECIFIC_ROOMS -> "Only when the tracker's name contains one of your rooms."
+                LocationMode.SPECIFIC_ROOMS -> "Only when the tracker's name or state contains one of your rooms."
             }
         },
         onPick = onPick,

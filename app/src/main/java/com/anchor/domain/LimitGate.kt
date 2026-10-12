@@ -231,6 +231,15 @@ class LimitGate @Inject constructor(
     override suspend fun isInForeground(packageName: String): Boolean =
         summaryFor(packageName).currentSessionStartAtMillis != null
 
+    /**
+     * Whether [packageName] itself is in front, not any app sharing its
+     * limit. The bedroom watcher needs this: a group-mate in front must not
+     * get another app's wall.
+     */
+    suspend fun isPackageInForeground(packageName: String): Boolean =
+        summarize(AppLimit(packageName), settingsProvider(), anchorDate.nowMillis())
+            .summary.currentSessionStartAtMillis != null
+
     /** Exposed for the dashboard and tests. */
     suspend fun summaryFor(packageName: String): AppUsageSummary {
         val limit = limitFor(packageName) ?: AppLimit(packageName)

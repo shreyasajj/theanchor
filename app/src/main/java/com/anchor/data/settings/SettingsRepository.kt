@@ -41,6 +41,10 @@ class SettingsRepository @Inject constructor(
         val HOME_PLACE = stringPreferencesKey("home_place")
         val VACATION_MODE = booleanPreferencesKey("vacation_mode")
         val VACATION_PLACE = stringPreferencesKey("vacation_place")
+        val BEDROOM_BLOCK = booleanPreferencesKey("bedroom_block")
+        val BEDROOM_ROOMS = stringPreferencesKey("bedroom_rooms")
+        val BEDROOM_START = intPreferencesKey("bedroom_start")
+        val BEDROOM_END = intPreferencesKey("bedroom_end")
         val ENFORCE_WITHOUT_HA = booleanPreferencesKey("enforce_without_ha")
         val RELOCK_BUBBLE = booleanPreferencesKey("relock_bubble")
         val PAUSES_OWED = stringSetPreferencesKey("pauses_owed")
@@ -90,6 +94,10 @@ class SettingsRepository @Inject constructor(
             prefs[Keys.VACATION_MODE] = next.vacationMode
             val vacation = next.vacationPlace
             if (vacation == null) prefs.remove(Keys.VACATION_PLACE) else prefs[Keys.VACATION_PLACE] = vacation.format()
+            prefs[Keys.BEDROOM_BLOCK] = next.bedroomBlockEnabled
+            prefs[Keys.BEDROOM_ROOMS] = formatRoomList(next.bedroomRooms)
+            prefs[Keys.BEDROOM_START] = next.bedroomStartMinute
+            prefs[Keys.BEDROOM_END] = next.bedroomEndMinute
             prefs[Keys.ENFORCE_WITHOUT_HA] = next.enforceWithoutHomeAssistant
             prefs[Keys.RELOCK_BUBBLE] = next.showRelockBubble
             prefs[Keys.PAUSES_OWED] = next.pausesOwed
@@ -170,6 +178,10 @@ class SettingsRepository @Inject constructor(
             homePlace = SavedPlace.parse(this[Keys.HOME_PLACE]),
             vacationMode = this[Keys.VACATION_MODE] ?: d.vacationMode,
             vacationPlace = SavedPlace.parse(this[Keys.VACATION_PLACE]),
+            bedroomBlockEnabled = this[Keys.BEDROOM_BLOCK] ?: d.bedroomBlockEnabled,
+            bedroomRooms = this[Keys.BEDROOM_ROOMS]?.let(::parseRoomList) ?: d.bedroomRooms,
+            bedroomStartMinute = this[Keys.BEDROOM_START] ?: d.bedroomStartMinute,
+            bedroomEndMinute = this[Keys.BEDROOM_END] ?: d.bedroomEndMinute,
             enforceWithoutHomeAssistant = this[Keys.ENFORCE_WITHOUT_HA] ?: d.enforceWithoutHomeAssistant,
             showRelockBubble = this[Keys.RELOCK_BUBBLE] ?: d.showRelockBubble,
             pausesOwed = this[Keys.PAUSES_OWED] ?: d.pausesOwed,

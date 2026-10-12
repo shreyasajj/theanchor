@@ -101,6 +101,14 @@
             android:taskAffinity=".lock" />
 
         <activity
+            android:name=".ui.lock.BedroomBlockedActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleInstance"
+            android:taskAffinity=".lock" />
+
+        <activity
             android:name=".ui.lock.MeditationActivity"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
             android:excludeFromRecents="true"

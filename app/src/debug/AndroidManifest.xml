@@ -38,6 +38,11 @@
             tools:replace="android:exported" />
 
         <activity
+            android:name=".ui.lock.BedroomBlockedActivity"
+            android:exported="true"
+            tools:replace="android:exported" />
+
+        <activity
             android:name=".ui.lock.MeditationActivity"
             android:exported="true"
             tools:replace="android:exported" />

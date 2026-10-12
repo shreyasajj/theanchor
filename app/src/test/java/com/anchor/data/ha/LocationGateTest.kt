@@ -169,4 +169,11 @@ class LocationGateTest {
         val result = LocationGate.evaluate(HaResult.Unavailable, LocationMode.SPECIFIC_ROOMS, listOf("Bedroom"))
         assertThat(result).isEqualTo(Presence.UNKNOWN)
     }
+
+    @Test
+    fun `specific rooms also reads the state when the tracker has a name`() {
+        // Room-presence integrations put the room in the state and the device in the name.
+        val result = LocationGate.evaluate(ok("Bedroom", "Pixel 8"), LocationMode.SPECIFIC_ROOMS, listOf("Bedroom"))
+        assertThat(result).isEqualTo(Presence.IN_SCOPE)
+    }
 }
