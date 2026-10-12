@@ -182,7 +182,7 @@ class AnchorAccessibilityService : AccessibilityService() {
             scope = scope,
             queries = object : BedroomQueries {
                 override suspend fun watches(packageName: String) = bedroomGate.watches(packageName)
-                override suspend fun isInForeground(packageName: String) = limitGate.isInForeground(packageName)
+                override suspend fun isInForeground(packageName: String) = limitGate.isPackageInForeground(packageName)
                 override suspend fun decide(packageName: String) = bedroomGate.decide(packageName)
             },
             onBlocked = { packageName, decision -> showBedroomBlock(packageName, decision) },

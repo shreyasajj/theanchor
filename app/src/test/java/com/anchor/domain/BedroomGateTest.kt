@@ -7,6 +7,9 @@ import com.anchor.data.ha.KillSwitch
 import com.anchor.data.location.SavedPlace
 import com.anchor.data.settings.AnchorSettings
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -98,11 +101,10 @@ class BedroomGateTest {
     }
 
     @Test
-    fun `the kill switch wins, and is asked before the tracker`() = runTest {
+    fun `the kill switch wins over a bedroom reading`() = runTest {
         val settings = configured().copy(killSwitchEnabled = true, killSwitchEntityId = override, killSwitchOverrideState = "on")
-        val (g, client) = gate(settings = settings, states = mapOf(override to state("on"), tracker to state("Bedroom")))
+        val (g, _) = gate(settings = settings, states = mapOf(override to state("on"), tracker to state("Bedroom")))
         assertThat(g.decide(youtube)).isEqualTo(BedroomDecision.Allow(BedroomSkip.OVERRIDE_ACTIVE))
-        assertThat(client.calls).containsExactly(override)
     }
 
     @Test
@@ -145,5 +147,63 @@ class BedroomGateTest {
         assertThat(g.watches("com.android.chrome")).isFalse()
         assertThat(gate(settings = configured().copy(bedroomBlockEnabled = false)).first.watches(youtube)).isFalse()
         assertThat(client.calls).isEmpty()
+    }
+
+    // --- Latency ---
+
+    /** Each Home Assistant request takes a second of virtual time. */
+    private class SlowHaClient(byEntity: Map<String, HaResult>) : FakeHaClient(byEntity) {
+        override suspend fun fetchState(baseUrl: String, token: String, entityId: String): HaResult {
+            delay(1_000)
+            return super.fetchState(baseUrl, token, entityId)
+        }
+    }
+
+    private class MovableClock(var instant: Instant) : Clock() {
+        override fun getZone() = ZoneOffset.UTC
+        override fun withZone(zone: java.time.ZoneId?) = this
+        override fun instant() = instant
+    }
+
+    private val withKillSwitch = configured().copy(
+        killSwitchEnabled = true, killSwitchEntityId = override, killSwitchOverrideState = "on",
+    )
+    private val bedroomAndSwitchOff = mapOf(tracker to state("Bedroom"), override to state("off"))
+
+    @Test
+    fun `the kill switch and the tracker are asked at the same time`() = runTest {
+        val client = SlowHaClient(bedroomAndSwitchOff)
+        val g = BedroomGate({ withKillSwitch }, client, KillSwitch(client), at(23))
+        assertThat(g.decide(youtube)).isInstanceOf(BedroomDecision.Block::class.java)
+        assertThat(currentTime).isEqualTo(1_000)
+    }
+
+    @Test
+    fun `a burst of events for one app makes one lookup`() = runTest {
+        val client = SlowHaClient(bedroomAndSwitchOff)
+        val g = BedroomGate({ withKillSwitch }, client, KillSwitch(client), at(23))
+        val all = List(4) { async { g.decide(youtube) } }.map { it.await() }
+        assertThat(all.toSet()).containsExactly(BedroomDecision.Block(7 * 60))
+        assertThat(client.calls).hasSize(2)
+    }
+
+    @Test
+    fun `the answer is remembered for a few seconds, then asked again`() = runTest {
+        val clock = MovableClock(Instant.parse("2026-10-12T23:00:00Z"))
+        val client = FakeHaClient(bedroomAndSwitchOff)
+        val g = BedroomGate({ withKillSwitch }, client, KillSwitch(client), AnchorDate(clock))
+        g.decide(youtube)
+        clock.instant = clock.instant.plusMillis(BedroomGate.MEMORY_MILLIS - 1)
+        g.decide(youtube)
+        assertThat(client.calls).hasSize(2)
+        clock.instant = clock.instant.plusMillis(1)
+        g.decide(youtube)
+        assertThat(client.calls).hasSize(4)
+    }
+
+    @Test
+    fun `a room in the state counts even when the tracker has a name`() = runTest {
+        val (g, _) = gate(states = mapOf(tracker to state("Bedroom", "Pixel 8")))
+        assertThat(g.decide(youtube)).isEqualTo(BedroomDecision.Block(7 * 60))
     }
 }

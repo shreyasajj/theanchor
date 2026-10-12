@@ -159,7 +159,7 @@ Two independent uses, both optional.
 - *Entity state* — the device tracker's state is one of your "States that count"
   (`home` unless you change it). List several, e.g. `home, Bedroom, Office`, for
   trackers whose state is a room or zone. Matching ignores case and must be exact.
-- *Specific rooms* — the tracker's `friendly_name` (or its state) contains one of
+- *Specific rooms* — the tracker's `friendly_name` or its state contains one of
   your room names, matched case-insensitively. Useful with per-room presence
   sensors: lock down in the bedroom, not in the kitchen.
 
@@ -282,7 +282,7 @@ the default.
 Requires JDK 17 and an Android SDK with platform 35. `minSdk` is 33.
 
 ```bash
-./gradlew :app:testDebugUnitTest      # 612 JVM unit tests, no device needed
+./gradlew :app:testDebugUnitTest      # 618 JVM unit tests, no device needed
 ./gradlew :app:assembleRelease        # app/build/outputs/apk/release/app-release.apk
 ./gradlew :app:installRelease         # sideload to a connected device
 ```
