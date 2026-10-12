@@ -18,6 +18,8 @@ import com.anchor.data.export.DocumentStoreFactory
 import com.anchor.data.export.JoplinApi
 import com.anchor.data.export.SafDocumentStore
 import com.anchor.data.ha.HomeAssistantApi
+import com.anchor.data.location.AndroidPhoneLocationSource
+import com.anchor.data.location.PhoneLocationSource
 import com.anchor.data.settings.SettingsProvider
 import com.anchor.data.settings.SettingsRepository
 import com.anchor.data.usage.AndroidUsageStatsSource
@@ -153,6 +155,12 @@ object AppModule {
     @Provides
     @Singleton
     fun provideUsageStatsSource(impl: AndroidUsageStatsSource): UsageStatsSource = impl
+
+    // --- Location ---
+
+    @Provides
+    @Singleton
+    fun providePhoneLocationSource(impl: AndroidPhoneLocationSource): PhoneLocationSource = impl
 
     /**
      * Limits are read on every foreground change; keep them in memory rather

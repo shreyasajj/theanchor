@@ -6,6 +6,12 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!-- Phone location source and vacation mode. Background location is
+         required: gates run from the accessibility service and the alarm. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+
     <!-- Launch the lock activities from the background (accessibility service). -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
