@@ -8,6 +8,14 @@ package com.anchor.data.usage
  */
 object UsageCalculator {
 
+    /**
+     * How long the user may step away from an open without a session length
+     * and come back to the same one. The gate's in-memory view of this lives
+     * in [com.anchor.domain.PauseLedger]; this is the same rule read from the
+     * log, for where the open was left.
+     */
+    const val RETURN_GRACE_MILLIS = 60_000L
+
     private data class Session(val start: Long, val end: Long?)
 
     /** Single-app convenience. */
@@ -17,7 +25,11 @@ object UsageCalculator {
         windowStartMillis: Long,
         nowMillis: Long,
         opensMillis: List<Long>,
-    ): AppUsageSummary = summarize(events, setOf(packageName), windowStartMillis, nowMillis, opensMillis)
+        sessionWindowMillis: Long? = null,
+        earlyLocksMillis: List<Long> = emptyList(),
+    ): AppUsageSummary = summarize(
+        events, setOf(packageName), windowStartMillis, nowMillis, opensMillis, sessionWindowMillis, earlyLocksMillis,
+    )
 
     /**
      * Whether a return [openAgeMillis] after the open began continues it. A
@@ -32,6 +44,10 @@ object UsageCalculator {
      *   merged and counted as one.
      * @param opensMillis when the pause let the user in, from before the
      *   window too, so a session or cooldown straddling the reset is seen.
+     * @param sessionWindowMillis the limit's session length, if it has one:
+     *   returns inside it belong to the open.
+     * @param earlyLocksMillis times the user locked the app early; one after
+     *   the latest open ends it there.
      */
     fun summarize(
         events: List<UsageEvent>,
@@ -39,6 +55,8 @@ object UsageCalculator {
         windowStartMillis: Long,
         nowMillis: Long,
         opensMillis: List<Long>,
+        sessionWindowMillis: Long? = null,
+        earlyLocksMillis: List<Long> = emptyList(),
     ): AppUsageSummary {
         val sessions = buildSessions(events, packageNames, nowMillis)
 
@@ -51,10 +69,7 @@ object UsageCalculator {
         val opens = opensMillis.count { it >= windowStartMillis }
         val lastOpen = opensMillis.maxOrNull()
 
-        // Only a departure after the open is a close; the flash before it is not.
-        val lastClose = lastOpen?.let { open ->
-            sessions.lastOrNull { it.end != null && it.end > open }?.end
-        }
+        val lastClose = lastOpen?.let { openRunEnd(sessions, it, sessionWindowMillis, earlyLocksMillis) }
 
         return AppUsageSummary(
             foregroundMillis = foregroundMillis,
@@ -64,6 +79,40 @@ object UsageCalculator {
             currentSessionStartAtMillis = sessions.lastOrNull()?.takeIf { it.end == null }?.start,
             lastOpenStartAtMillis = lastOpen,
         )
+    }
+
+    /**
+     * Where the user last left the open that began at [open]. A session is
+     * part of the open while it is a return the gate lets straight back in:
+     * inside the session when the limit has one, otherwise within the return
+     * grace of the previous one. The flash before Continue ends before the
+     * open; a later launch's flash, closed from the pause, starts outside it.
+     * Neither can start or stretch a cooldown. An early lock ends the run.
+     * Null while the open's first session is still running, or if the app
+     * never came up after Continue.
+     */
+    private fun openRunEnd(
+        sessions: List<Session>,
+        open: Long,
+        sessionWindowMillis: Long?,
+        earlyLocksMillis: List<Long>,
+    ): Long? {
+        val lockedAt = earlyLocksMillis.filter { it >= open }.minOrNull()
+        var previousEnd = open
+        var close: Long? = null
+        for (session in sessions) {
+            if (session.end != null && session.end <= open) continue
+            if (lockedAt != null && session.start > lockedAt) break
+            val belongs = if (sessionWindowMillis != null) {
+                session.start - open < sessionWindowMillis
+            } else {
+                session.start - previousEnd < RETURN_GRACE_MILLIS
+            }
+            if (!belongs || session.end == null) break
+            close = session.end
+            previousEnd = session.end
+        }
+        return close
     }
 
     /**

@@ -57,6 +57,24 @@ object ForegroundAppDecider {
         }
     }
 
+    /**
+     * Drawn over an app without leaving it: the notification shade, the lock
+     * screen, system dialogs.
+     */
+    private val OVERLAYS: Set<String> = setOf("com.android.systemui", "android")
+
+    /**
+     * Whether [packageName] reaching the front means the user left the app
+     * they were in. True for ordinary apps and also for those that are never
+     * blocked, the dialer, Messages, Settings and the in-call screen: never
+     * blocking them is a safety rule, not a sign the user stayed. False for
+     * overlays and for our own screens.
+     */
+    fun leavesTheAppInFront(packageName: String): Boolean {
+        if (packageName.isBlank() || packageName == OWN_PACKAGE) return false
+        return OVERLAYS.none { packageName == it || packageName.startsWith("$it.") }
+    }
+
     /** Prefix match with a dot boundary: `com.android.dialer.foo` yes, `com.android.dialerapp` no. */
     fun isAlwaysAllowed(packageName: String): Boolean =
         ALWAYS_ALLOWED_PREFIXES.any { packageName == it || packageName.startsWith("$it.") }

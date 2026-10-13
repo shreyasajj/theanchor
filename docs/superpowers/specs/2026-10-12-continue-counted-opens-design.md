@@ -38,7 +38,9 @@ Not an open:
 - closing the app from the pause, or walking away from it,
 - returning inside a running session (a rejoin, which shows no pause),
 - switching between members of a group inside a session,
-- an evening-only pause (no limit): nothing is recorded.
+- an evening-only pause (no limit): nothing is recorded;
+- an evening delay over an app the limit let through (an in-app re-check
+  inside an open): it is not the limit's question, so going on is not an open.
 
 Pressing Continue and then going home immediately still counts: the choice
 was made.
@@ -51,7 +53,7 @@ was made.
 | **Opens used** | Log sessions since the budget start, merged if under 60s apart | Rows for the limit's subject at or after the budget start (usage-day start, or the limit's window start if later) |
 | **Session clock start** | First foreground event of the open (the flash) | `atMillis` of the latest row |
 | **Rejoin** | Within the session of the flash, and only once the open is 15s old | Within `sessionMinutes` of the latest row, with no early lock since it and no pause owed |
-| **Cooldown "last close"** | Last BACKGROUND event, flash included | Last log session end **after** the latest row; null if none |
+| **Cooldown "last close"** | Last BACKGROUND event, flash included | End of the latest open's **own run** of log sessions: returns inside its session, or within 60s of the previous session when it has no session length. A later launch's flash, closed from the pause, starts outside the run; an early lock ends it. Null if the app never came up |
 | **Minutes (TIME mode)** | Usage log | Unchanged |
 | **In front?** | Usage log | Unchanged |
 
@@ -78,9 +80,13 @@ Instead the app remembers, in memory, which limit the user is **inside**:
   away, is still inside: no pause, no open. Hopping through several other
   apps does not restart the grace. Past it, the open is over and the next
   launch is a new one.
-- Ignored windows (keyboard, notification shade, our own screens) are not
-  stepping away. Switching between members of a group is not either: they
-  share the subject.
+- Apps that are never blocked still step away: the dialer, Messages,
+  Settings, the in-call screen, anything on the allowlist. So does the
+  screen going off. Overlays do not: the notification shade, the lock
+  screen, system dialogs, our own screens. Switching between members of a
+  group is not stepping away either: they share the subject.
+- Only a limit can be inside. The service lets the launcher and unlimited
+  apps through too; they never take the slot.
 - **Left at once**, with no grace, when a pause goes up for the subject (a
   session-cap pause included), when the session cap ends it, or on an early
   lock.
@@ -182,9 +188,10 @@ fun summarize(
 - `opens` = entries of `opensMillis` at or after `windowStartMillis`.
 - `openUnits` = `opens` as a `Double` (kept so `BudgetSummary` is untouched).
 - `lastOpenStartAtMillis` = the latest entry of `opensMillis`, or null.
-- `lastForegroundEndAtMillis` = the end of the last completed log session
-  that ends after `lastOpenStartAtMillis`; null when there is no open or no
-  such session.
+- `lastForegroundEndAtMillis` = the end of the latest open's own run of
+  completed log sessions (see §1.2), given the limit's
+  `sessionWindowMillis` and `earlyLocksMillis`; null when there is no open
+  or the app never came up after it.
 - `foregroundMillis`, `currentSessionStartAtMillis`: from the log, unchanged.
 
 Removed: `OPEN_COALESCE_WINDOW_MILLIS`, the `sessionWindowMillis` and

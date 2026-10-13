@@ -297,6 +297,21 @@ class LimitGateTest {
     }
 
     @Test
+    fun `THE BUG, second launch - closing from the pause after an earlier open starts no cooldown`() = runTest {
+        // Opened at 600, left at 610: the cooldown ran out at 640. A launch at
+        // 650 was closed from the pause; it must not restart the cooldown.
+        val s = limit(AppLimit(app, cooldownMinutes = 30))
+        opened(s, 600)
+        val flashAt = dayStartMillis + 650 * minute
+        val events = listOf(
+            fg(600), bg(610),
+            UsageEvent(app, UsageEvent.Type.FOREGROUND, flashAt),
+            UsageEvent(app, UsageEvent.Type.BACKGROUND, flashAt + 300),
+        )
+        assertThat(gate(events = events).decide(app)).isEqualTo(LimitDecision.Pause(0))
+    }
+
+    @Test
     fun `a recorded open counts at once`() = runTest {
         val s = limit(AppLimit(app, dailyOpens = 1))
         gate().recordOpen(app, s)

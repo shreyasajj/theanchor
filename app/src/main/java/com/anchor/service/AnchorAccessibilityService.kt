@@ -1,7 +1,10 @@
 package com.anchor.service
 
 import android.accessibilityservice.AccessibilityService
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.view.accessibility.AccessibilityEvent
 import com.anchor.data.settings.SettingsRepository
 import com.anchor.data.usage.AppLimit
@@ -44,7 +47,12 @@ import kotlinx.coroutines.launch
 /** Which screen, if any, a single app launch produces. */
 sealed interface Route {
     data object None : Route
-    data class Pause(val seconds: Int) : Route
+    /**
+     * @param countsAsOpen whether the limit asked for this pause, so going in
+     *   is an open. False for an evening delay over an app the limit let
+     *   through: that is a re-check inside an open, not a new one.
+     */
+    data class Pause(val seconds: Int, val countsAsOpen: Boolean) : Route
     data class Blocked(val reason: LimitReason, val resetsAtMillis: Long) : Route
     data object StrictEvening : Route
 }
@@ -58,7 +66,8 @@ object LimitRouting {
     fun route(limit: LimitDecision, evening: EveningDecision): Route = when {
         limit is LimitDecision.Blocked -> Route.Blocked(limit.reason, limit.resetsAtMillis)
         evening is EveningDecision.Strict -> Route.StrictEvening
-        PauseCoalescing.wanted(evening, limit) -> Route.Pause(PauseCoalescing.secondsFor(evening, limit))
+        PauseCoalescing.wanted(evening, limit) ->
+            Route.Pause(PauseCoalescing.secondsFor(evening, limit), countsAsOpen = limit is LimitDecision.Pause)
         else -> Route.None
     }
 }
@@ -189,6 +198,22 @@ class AnchorAccessibilityService : AccessibilityService() {
         )
     }
 
+    /**
+     * The screen going off leaves the app in front. The lock screen is
+     * systemui, which is never judged, so nothing else would say so, and an
+     * hour with the phone locked would still count as inside the open.
+     */
+    private val screenOffReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            PauseLedger.stepAway(System.currentTimeMillis())
+        }
+    }
+
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        registerReceiver(screenOffReceiver, IntentFilter(Intent.ACTION_SCREEN_OFF), RECEIVER_NOT_EXPORTED)
+    }
+
     private fun showBedroomBlock(packageName: String, decision: BedroomDecision.Block) {
         relockBubble.hideNow()
         startActivity(BedroomBlockedActivity.intent(this, packageName, decision.endMinute))
@@ -234,6 +259,12 @@ class AnchorAccessibilityService : AccessibilityService() {
                 )
             ) {
                 is ForegroundAction.Ignore -> {
+                    // Never blocked is not the same as staying: Messages or a
+                    // call leaves the open the user was inside.
+                    if (ForegroundAppDecider.leavesTheAppInFront(packageName)) {
+                        PauseLedger.stepAway(System.currentTimeMillis())
+                    }
+
                     // Neither the session timer nor the button is touched
                     // here. Ignore covers system windows, the keyboard and
                     // toasts, which come and go in an instant, and our own
@@ -322,7 +353,9 @@ class AnchorAccessibilityService : AccessibilityService() {
                         is Route.Pause -> {
                             relockBubble.hideNow()
                             startActivity(
-                                PauseActivity.intent(this@AnchorAccessibilityService, route.seconds, target, subject)
+                                PauseActivity.intent(
+                                    this@AnchorAccessibilityService, route.seconds, target, subject, route.countsAsOpen,
+                                )
                             )
                         }
                         is Route.Blocked -> {
@@ -355,6 +388,7 @@ class AnchorAccessibilityService : AccessibilityService() {
     override fun onInterrupt() = Unit
 
     override fun onDestroy() {
+        runCatching { unregisterReceiver(screenOffReceiver) }
         relockBubble.hideNow()
         sessionCapWatcher.cancel()
         bedroomWatcher.cancel()

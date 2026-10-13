@@ -1,5 +1,7 @@
 package com.anchor.domain
 
+import com.anchor.data.usage.AppLimit
+import com.anchor.data.usage.UsageCalculator
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicReference
 
@@ -41,9 +43,10 @@ object PauseLedger {
      * How long the user may step away from an open and come back to the
      * same one: pasting a link into Messages, glancing at a reply. The old
      * usage-log rule merged sessions under a minute apart; this keeps that,
-     * measured from leaving.
+     * measured from leaving. One value with the calculator's, which reads
+     * the same rule from the log to find where an open was left.
      */
-    const val RETURN_GRACE_MILLIS = 60_000L
+    const val RETURN_GRACE_MILLIS = UsageCalculator.RETURN_GRACE_MILLIS
 
     /** [leftAtMillis] is null while the subject is in front. */
     private data class Inside(val subject: String, val leftAtMillis: Long?)
@@ -56,9 +59,14 @@ object PauseLedger {
      */
     private val inside = AtomicReference<Inside?>(null)
 
-    /** A limited app reached the front and was let through. */
+    /**
+     * An app reached the front and was let through. Only a limit can be
+     * inside: the service lets the launcher and every unlimited app through
+     * too, and one of those taking the slot would cost the limited app its
+     * open on a hop home and back.
+     */
     fun enter(subject: String) {
-        if (subject.isNotEmpty()) inside.set(Inside(subject, leftAtMillis = null))
+        if (subject.startsWith(AppLimit.SUBJECT_PREFIX)) inside.set(Inside(subject, leftAtMillis = null))
     }
 
     /** Inside [subject], or stepped away from it less than the grace ago. */
@@ -82,6 +90,17 @@ object PauseLedger {
                 current.leftAtMillis == null -> current.copy(leftAtMillis = nowMillis)
                 else -> current
             }
+        }
+    }
+
+    /**
+     * The user left whatever was in front without another app being judged:
+     * a never-blocked app (Messages, the dialer, the in-call screen) or the
+     * screen going off. Starts the grace if it is not already running.
+     */
+    fun stepAway(nowMillis: Long) {
+        inside.getAndUpdate { current ->
+            if (current != null && current.leftAtMillis == null) current.copy(leftAtMillis = nowMillis) else current
         }
     }
 

@@ -89,9 +89,10 @@ class UsageCalculatorTest {
     // --- The close after the open ---
 
     @Test
-    fun `the close is the last session end after the latest open`() {
+    fun `the close is where the open was left, not a later return`() {
+        // Left at 20; back at 30 is past the grace, so it was paused: not this open.
         val s = summarize(listOf(fg(10), bg(20), fg(30), bg(35)), nowMinutes = 60, opensAtMinutes = listOf(10))
-        assertThat(s.lastForegroundEndAtMillis).isEqualTo(35 * minute)
+        assertThat(s.lastForegroundEndAtMillis).isEqualTo(20 * minute)
     }
 
     @Test
@@ -106,6 +107,41 @@ class UsageCalculatorTest {
 
         assertThat(s.lastForegroundEndAtMillis).isEqualTo(20 * minute)
         assertThat(s.currentSessionStartAtMillis).isEqualTo(30 * minute)
+    }
+
+    @Test
+    fun `THE BUG, second launch - a later flash closed from the pause is not the close`() {
+        // Opened at 600, left at 610. A launch at 650 was closed from the pause.
+        val events = listOf(fg(600), bg(610), fg(650), UsageEvent(app, UsageEvent.Type.BACKGROUND, 650 * minute + 300))
+        val s = summarize(events, nowMinutes = 660, opensAtMinutes = listOf(600))
+        assertThat(s.lastForegroundEndAtMillis).isEqualTo(610 * minute)
+    }
+
+    @Test
+    fun `a return within the grace is part of the open, so its end is the close`() {
+        val back = 20 * minute + 30_000
+        val events = listOf(fg(10), bg(20), UsageEvent(app, UsageEvent.Type.FOREGROUND, back), bg(35))
+        val s = summarize(events, nowMinutes = 60, opensAtMinutes = listOf(10))
+        assertThat(s.lastForegroundEndAtMillis).isEqualTo(35 * minute)
+    }
+
+    @Test
+    fun `with a session length, returns inside the session are the open and later ones are not`() {
+        val events = listOf(fg(10), bg(12), fg(17), bg(19), fg(25), bg(26))
+        val s = UsageCalculator.summarize(
+            events, app, windowStart, 60 * minute, listOf(10 * minute), sessionWindowMillis = 10 * minute,
+        )
+        assertThat(s.lastForegroundEndAtMillis).isEqualTo(19 * minute)
+    }
+
+    @Test
+    fun `an early lock ends the open, so a launch after it is not its close`() {
+        val events = listOf(fg(10), bg(12), fg(13), UsageEvent(app, UsageEvent.Type.BACKGROUND, 13 * minute + 300))
+        val s = UsageCalculator.summarize(
+            events, app, windowStart, 60 * minute, listOf(10 * minute),
+            sessionWindowMillis = 10 * minute, earlyLocksMillis = listOf(12 * minute),
+        )
+        assertThat(s.lastForegroundEndAtMillis).isEqualTo(12 * minute)
     }
 
     // --- Minutes and in-front, from the log as before ---
@@ -160,14 +196,14 @@ class UsageCalculatorTest {
     @Test
     fun `a group's apps are summed as one`() {
         val s = UsageCalculator.summarize(
-            events = listOf(fg(10), bg(20), fg(40, instagram), bg(45, instagram)),
+            events = listOf(fg(10), bg(20), fg(20, instagram), bg(25, instagram)),
             packageNames = setOf(app, instagram), windowStartMillis = windowStart, nowMillis = 60 * minute,
             opensMillis = listOf(10 * minute),
         )
 
         assertThat(s.foregroundMillis).isEqualTo(15 * minute)
         assertThat(s.opens).isEqualTo(1)
-        assertThat(s.lastForegroundEndAtMillis).isEqualTo(45 * minute)
+        assertThat(s.lastForegroundEndAtMillis).isEqualTo(25 * minute)
     }
 
     @Test

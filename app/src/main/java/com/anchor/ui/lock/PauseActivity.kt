@@ -103,11 +103,15 @@ class PauseActivity : ComponentActivity() {
     /** What the ledgers are keyed by: the limit's subject, or the package. */
     private lateinit var subject: String
 
+    /** Whether the limit asked for this pause, so going in is an open. */
+    private var countsAsOpen = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val totalSeconds = intent.getIntExtra(EXTRA_SECONDS, SimpleDelayTimer.DEFAULT_SECONDS)
         blockedPackage = intent.getStringExtra(EXTRA_BLOCKED_PACKAGE).orEmpty()
         subject = intent.getStringExtra(EXTRA_SUBJECT).orEmpty().ifEmpty { blockedPackage }
+        countsAsOpen = intent.getBooleanExtra(EXTRA_COUNTS_AS_OPEN, false)
         PauseLedger.begin(subject)
         // Durably, so a process restart does not forget the debt.
         lifecycleScope.launch { settingsRepository.owePause(subject) }
@@ -215,7 +219,7 @@ class PauseActivity : ComponentActivity() {
         PauseLedger.complete(subject, System.currentTimeMillis())
         lifecycleScope.launch { settingsRepository.settlePause(subject) }
         // Being let in is the open. On the app scope: finish() would cancel it here.
-        appScope.launch { limitGate.recordOpen(blockedPackage, subject) }
+        if (countsAsOpen) appScope.launch { limitGate.recordOpen(blockedPackage, subject) }
         finish()
     }
 
@@ -229,7 +233,7 @@ class PauseActivity : ComponentActivity() {
 
     private fun meditateInstead() {
         completed = true   // the meditation screen owns the outcome from here
-        startActivity(MeditationActivity.intent(this, blockedPackage, subject))
+        startActivity(MeditationActivity.intent(this, blockedPackage, subject, countsAsOpen))
         finish()
     }
 
@@ -271,8 +275,15 @@ class PauseActivity : ComponentActivity() {
         const val EXTRA_SECONDS = "com.anchor.extra.PAUSE_SECONDS"
         const val EXTRA_BLOCKED_PACKAGE = "com.anchor.extra.BLOCKED_PACKAGE"
         const val EXTRA_SUBJECT = "com.anchor.extra.PAUSE_SUBJECT"
+        const val EXTRA_COUNTS_AS_OPEN = "com.anchor.extra.COUNTS_AS_OPEN"
 
-        fun intent(context: Context, seconds: Int, blockedPackage: String, subject: String = blockedPackage): Intent =
+        fun intent(
+            context: Context,
+            seconds: Int,
+            blockedPackage: String,
+            subject: String = blockedPackage,
+            countsAsOpen: Boolean = false,
+        ): Intent =
             Intent(context, PauseActivity::class.java).apply {
                 addFlags(
                     Intent.FLAG_ACTIVITY_NEW_TASK or
@@ -282,6 +293,7 @@ class PauseActivity : ComponentActivity() {
                 putExtra(EXTRA_SECONDS, seconds)
                 putExtra(EXTRA_BLOCKED_PACKAGE, blockedPackage)
                 putExtra(EXTRA_SUBJECT, subject)
+                putExtra(EXTRA_COUNTS_AS_OPEN, countsAsOpen)
             }
     }
 }

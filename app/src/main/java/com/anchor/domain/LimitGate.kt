@@ -394,6 +394,8 @@ class LimitGate @Inject constructor(
             windowStartMillis = budgetStartMillis(limit, dayStart),
             nowMillis = nowMillis,
             opensMillis = opens.map { it.atMillis },
+            sessionWindowMillis = limit.sessionMinutes?.let { it * 60_000L },
+            earlyLocksMillis = earlyLocks,
         ),
         lastEarlyLock = earlyLocks.lastOrNull(),
     )

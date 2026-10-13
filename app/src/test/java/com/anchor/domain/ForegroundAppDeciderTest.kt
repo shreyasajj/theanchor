@@ -109,4 +109,21 @@ class ForegroundAppDeciderTest {
     fun `the default allowlist tolerates unresolvable defaults`() {
         assertThat(ForegroundAppDecider.defaultAllowlist(dialer = null, sms = null)).isEmpty()
     }
+
+    // --- Ignored, but still leaving the app you were in ---
+
+    @Test
+    fun `an allowlisted app or the in-call screen is a departure though never blocked`() {
+        assertThat(ForegroundAppDecider.leavesTheAppInFront("com.google.android.apps.messaging")).isTrue()
+        assertThat(ForegroundAppDecider.leavesTheAppInFront("com.android.incallui")).isTrue()
+        assertThat(ForegroundAppDecider.leavesTheAppInFront("com.android.settings")).isTrue()
+    }
+
+    @Test
+    fun `the shade, the lock screen, system dialogs and our own screens are not departures`() {
+        assertThat(ForegroundAppDecider.leavesTheAppInFront("com.android.systemui")).isFalse()
+        assertThat(ForegroundAppDecider.leavesTheAppInFront("android")).isFalse()
+        assertThat(ForegroundAppDecider.leavesTheAppInFront("com.anchor")).isFalse()
+        assertThat(ForegroundAppDecider.leavesTheAppInFront("")).isFalse()
+    }
 }

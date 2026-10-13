@@ -54,6 +54,9 @@ class MeditationActivity : ComponentActivity() {
     /** The ledger key for the pause this sit may serve. */
     private var subject: String? = null
 
+    /** Whether the pause this sit replaces was the limit's, so going in is an open. */
+    private var countsAsOpen = false
+
     /** Set once the user has chosen what happens next, so onStop can tell
      *  a deliberate exit from simply walking away. */
     private var resolved = false
@@ -63,6 +66,7 @@ class MeditationActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         blockedPackage = intent.getStringExtra(EXTRA_BLOCKED_PACKAGE)?.takeIf { it.isNotEmpty() }
+        countsAsOpen = intent.getBooleanExtra(PauseActivity.EXTRA_COUNTS_AS_OPEN, false)
         subject = intent.getStringExtra(EXTRA_SUBJECT)?.takeIf { it.isNotEmpty() } ?: blockedPackage
         val appLabel = blockedPackage?.let { AppLabels.app(this, it) }
 
@@ -149,7 +153,8 @@ class MeditationActivity : ComponentActivity() {
             PauseLedger.complete(subject, System.currentTimeMillis())
             lifecycleScope.launch { settingsRepository.settlePause(subject) }
             // Going in after the sit is the open, as Continue would be.
-            blockedPackage?.let { pkg -> appScope.launch { limitGate.recordOpen(pkg, subject) } }
+            val pkg = blockedPackage
+            if (countsAsOpen && pkg != null) appScope.launch { limitGate.recordOpen(pkg, subject) }
         }
         finish()
     }
@@ -179,11 +184,17 @@ class MeditationActivity : ComponentActivity() {
         /** Below this a sit is not worth recording. */
         const val MIN_RECORDED_SECONDS = 20
 
-        fun intent(context: Context, blockedPackage: String? = null, subject: String? = blockedPackage): Intent =
+        fun intent(
+            context: Context,
+            blockedPackage: String? = null,
+            subject: String? = blockedPackage,
+            countsAsOpen: Boolean = false,
+        ): Intent =
             Intent(context, MeditationActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
                 if (blockedPackage != null) putExtra(EXTRA_BLOCKED_PACKAGE, blockedPackage)
                 if (subject != null) putExtra(EXTRA_SUBJECT, subject)
+                putExtra(PauseActivity.EXTRA_COUNTS_AS_OPEN, countsAsOpen)
             }
     }
 }

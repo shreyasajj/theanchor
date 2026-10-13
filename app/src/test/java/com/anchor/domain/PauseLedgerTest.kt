@@ -177,4 +177,31 @@ class PauseLedgerTest {
         PauseLedger.leave(group)
         assertThat(PauseLedger.isInside(group, now)).isFalse()
     }
+
+    @Test
+    fun `an unlimited app let through does not take the slot - the service enters every app it lets through`() {
+        // What the service does on a hop home and back: the launcher reaches
+        // the front and is let through (Route.None), then the app returns.
+        PauseLedger.enter(group)
+        PauseLedger.onForeground(launcher, now)
+        PauseLedger.enter(launcher)
+        PauseLedger.onForeground(group, now + 5_000)
+        assertThat(PauseLedger.isInside(group, now + 5_000)).isTrue()
+    }
+
+    @Test
+    fun `stepping away without another limit in front starts the grace - the screen going off`() {
+        PauseLedger.enter(group)
+        PauseLedger.stepAway(now)
+        assertThat(PauseLedger.isInside(group, now + grace - 1)).isTrue()
+        assertThat(PauseLedger.isInside(group, now + grace)).isFalse()
+    }
+
+    @Test
+    fun `stepping away again does not restart the grace`() {
+        PauseLedger.enter(group)
+        PauseLedger.stepAway(now)
+        PauseLedger.stepAway(now + grace / 2)
+        assertThat(PauseLedger.isInside(group, now + grace)).isFalse()
+    }
 }
