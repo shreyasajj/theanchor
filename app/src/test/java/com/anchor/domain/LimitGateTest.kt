@@ -220,6 +220,59 @@ class LimitGateTest {
 
 
     @Test
+    fun `inside the last open, an in-app re-check lets you stay`() = runTest {
+        val s = limit(AppLimit(app, dailyOpens = 2))
+        opened(s, 10)
+        opened(s, 600)
+        val events = listOf(fg(10), bg(15), fg(600))
+        PauseLedger.enter(s)
+        assertThat(gate(events = events).decide(app)).isEqualTo(LimitDecision.Allow)
+    }
+
+    @Test
+    fun `back from a quick hop inside the grace is the same open`() = runTest {
+        val s = limit(AppLimit(app, dailyOpens = 2))
+        opened(s, 10)
+        opened(s, 600)
+        PauseLedger.enter(s)
+        PauseLedger.onForeground("com.google.android.apps.messaging", clock.millis() - 20_000)
+        PauseLedger.onForeground(s, clock.millis())
+        val events = listOf(fg(10), bg(15), fg(600))
+        assertThat(gate(events = events).decide(app)).isEqualTo(LimitDecision.Allow)
+    }
+
+    @Test
+    fun `back after the grace is a new open, and there are none left`() = runTest {
+        val s = limit(AppLimit(app, dailyOpens = 2))
+        opened(s, 10)
+        opened(s, 600)
+        PauseLedger.enter(s)
+        PauseLedger.onForeground("com.android.launcher", dayStartMillis + 605 * minute)
+        val events = listOf(fg(10), bg(15), fg(600), bg(605))
+        val decision = gate(events = events).decide(app) as LimitDecision.Blocked
+        assertThat(decision.reason).isEqualTo(LimitReason.DAILY_OPENS)
+    }
+
+    @Test
+    fun `inside still respects a spent minute budget`() = runTest {
+        val s = limit(AppLimit(app, limitMode = LimitMode.TIME, dailyMinutes = 30))
+        opened(s, 600)
+        PauseLedger.enter(s)
+        val decision = gate(events = listOf(fg(600))).decide(app) as LimitDecision.Blocked
+        assertThat(decision.reason).isEqualTo(LimitReason.DAILY_TIME)
+    }
+
+    @Test
+    fun `a limit with a session length ignores inside - the session is the open`() = runTest {
+        // Session from 600 ran out at 610; being marked inside must not wave
+        // the user back in for a fresh one.
+        val s = limit(AppLimit(app, sessionMinutes = 10, preOpenDelaySeconds = 30))
+        opened(s, 600)
+        PauseLedger.enter(s)
+        assertThat(gate(events = listOf(fg(600), bg(608))).decide(app)).isEqualTo(LimitDecision.Pause(30))
+    }
+
+    @Test
     fun `THE BUG - closing from the pause costs no open`() = runTest {
         db.appLimitDao().upsert(AppLimit(app, dailyOpens = 1))
         val flashAt = dayStartMillis + 650 * minute

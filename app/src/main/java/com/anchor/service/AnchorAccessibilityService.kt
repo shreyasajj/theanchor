@@ -279,6 +279,10 @@ class AnchorAccessibilityService : AccessibilityService() {
                     val now = System.currentTimeMillis()
                     val subject = PauseSubject.of(target, limit)
 
+                    // Anything else in front steps away from the open the
+                    // user was inside; coming back within the grace returns.
+                    PauseLedger.onForeground(subject, now)
+
                     // Just locked early: the app is on its way out, not in.
                     if (PauseLedger.isIgnored(subject, now)) return@launch
 
@@ -294,7 +298,10 @@ class AnchorAccessibilityService : AccessibilityService() {
                     // A pause the user actually sat through lets the app in.
                     // One they walked away from does not, and clears the
                     // debounce so the retry is not swallowed as a repeat.
-                    if (PauseLedger.isSatisfied(subject, now)) return@launch
+                    if (PauseLedger.isSatisfied(subject, now)) {
+                        PauseLedger.enter(subject)
+                        return@launch
+                    }
                     if (PauseLedger.consumeAbandonment(subject)) debounce.clear()
                     if (!debounce.shouldHandle(target, now)) return@launch
 
@@ -307,7 +314,7 @@ class AnchorAccessibilityService : AccessibilityService() {
                     }
 
                     when (val route = LimitRouting.route(decision, evening)) {
-                        is Route.None -> Unit
+                        is Route.None -> PauseLedger.enter(subject)
                         is Route.StrictEvening -> {
                             relockBubble.hideNow()
                             launchLock(EveningLockActivity::class.java, target)

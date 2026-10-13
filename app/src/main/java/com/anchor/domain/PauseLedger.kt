@@ -1,6 +1,7 @@
 package com.anchor.domain
 
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Remembers which pauses were actually *finished*, so leaving the pause
@@ -37,6 +38,62 @@ object PauseLedger {
     private val abandoned = ConcurrentHashMap<String, Boolean>()
 
     /**
+     * How long the user may step away from an open and come back to the
+     * same one: pasting a link into Messages, glancing at a reply. The old
+     * usage-log rule merged sessions under a minute apart; this keeps that,
+     * measured from leaving.
+     */
+    const val RETURN_GRACE_MILLIS = 60_000L
+
+    /** [leftAtMillis] is null while the subject is in front. */
+    private data class Inside(val subject: String, val leftAtMillis: Long?)
+
+    /**
+     * The limit the user is inside: let in, and not away longer than the
+     * grace. The gate is asked again on in-app window changes, and the usage
+     * log cannot tell those from a fresh launch's flash; this can. Only one
+     * subject is in front at a time, so one slot is enough.
+     */
+    private val inside = AtomicReference<Inside?>(null)
+
+    /** A limited app reached the front and was let through. */
+    fun enter(subject: String) {
+        if (subject.isNotEmpty()) inside.set(Inside(subject, leftAtMillis = null))
+    }
+
+    /** Inside [subject], or stepped away from it less than the grace ago. */
+    fun isInside(subject: String, nowMillis: Long): Boolean {
+        val current = inside.get() ?: return false
+        return current.subject == subject && withinGrace(current, nowMillis)
+    }
+
+    /**
+     * [subject] reached the front. Any other subject steps away, keeping the
+     * first departure time so hopping between apps does not stretch the
+     * grace. The same subject (a group-mate, or a return) comes back, if it
+     * is still within the grace.
+     */
+    fun onForeground(subject: String, nowMillis: Long) {
+        inside.getAndUpdate { current ->
+            when {
+                current == null -> null
+                current.subject == subject ->
+                    if (withinGrace(current, nowMillis)) current.copy(leftAtMillis = null) else null
+                current.leftAtMillis == null -> current.copy(leftAtMillis = nowMillis)
+                else -> current
+            }
+        }
+    }
+
+    /** The open in [subject] is over at once, with no grace: a session cap, a pause, an early lock. */
+    fun leave(subject: String) {
+        inside.getAndUpdate { if (it?.subject == subject) null else it }
+    }
+
+    private fun withinGrace(current: Inside, nowMillis: Long): Boolean =
+        current.leftAtMillis == null || nowMillis - current.leftAtMillis < RETURN_GRACE_MILLIS
+
+    /**
      * After an early lock the app is on its way out: the confirmation sheet
      * closes over it and home is launched, and in between the app is in
      * front for a moment. Evaluating that moment showed the pause to someone
@@ -49,6 +106,7 @@ object PauseLedger {
         if (subject.isEmpty()) return
         ignoredUntil[subject] = nowMillis + EARLY_LOCK_GRACE_MILLIS
         satisfiedUntil.remove(subject)
+        leave(subject)
     }
 
     fun isIgnored(subject: String, nowMillis: Long): Boolean =
@@ -62,6 +120,7 @@ object PauseLedger {
         // from here must be judged by the gate, not waved through.
         ignoredUntil.remove(subject)
         satisfiedUntil.remove(subject)
+        leave(subject)
     }
 
     /** The user sat through the wait, or meditated instead. Let them in. */
@@ -105,5 +164,6 @@ object PauseLedger {
         unfinished.clear()
         abandoned.clear()
         ignoredUntil.clear()
+        inside.set(null)
     }
 }

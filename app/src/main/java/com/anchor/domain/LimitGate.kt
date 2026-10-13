@@ -109,11 +109,13 @@ class LimitGate @Inject constructor(
         val pauseOwed = limit.subject in settings.pausesOwed
         val nextReset = resetsAt(limit, settings)
 
-        // 0. Coming back inside the session is the same open: it costs no
+        // 0. Still inside the open (no session length; see PauseLedger), or
+        //    coming back inside its session, is the same open: it costs no
         //    second open, serves no cooldown and, since the pause was served
         //    on the way in, is not paused again. Only a pause that was walked
         //    away from is still owed.
-        if (rejoinsOpen(limit, summary, now, pauseOwed, usage.lastEarlyLock)) {
+        val inside = limit.sessionMinutes == null && PauseLedger.isInside(limit.subject, now)
+        if (inside || rejoinsOpen(limit, summary, now, pauseOwed, usage.lastEarlyLock)) {
             limit.effectiveDailyMinutes?.let { maxMinutes ->
                 if (summary.foregroundMillis >= maxMinutes * 60_000L) {
                     return LimitDecision.Blocked(LimitReason.DAILY_TIME, nextReset)

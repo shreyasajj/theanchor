@@ -109,4 +109,72 @@ class PauseLedgerTest {
 
         assertThat(PauseLedger.isSatisfied("com.instagram.android", now + 1_000)).isFalse()
     }
+
+    // --- Inside an open ---
+
+    private val group = "limit:1"
+    private val launcher = "com.android.launcher"
+    private val grace = PauseLedger.RETURN_GRACE_MILLIS
+
+    @Test
+    fun `entering marks the subject inside`() {
+        PauseLedger.enter(group)
+        assertThat(PauseLedger.isInside(group, now)).isTrue()
+        assertThat(PauseLedger.isInside("limit:2", now)).isFalse()
+    }
+
+    @Test
+    fun `back within the grace is still inside`() {
+        PauseLedger.enter(group)
+        PauseLedger.onForeground(launcher, now)
+        PauseLedger.onForeground(group, now + grace - 1)
+        assertThat(PauseLedger.isInside(group, now + 10 * grace)).isTrue()
+    }
+
+    @Test
+    fun `away past the grace is out, and coming back does not restore it`() {
+        PauseLedger.enter(group)
+        PauseLedger.onForeground(launcher, now)
+        assertThat(PauseLedger.isInside(group, now + grace)).isFalse()
+        PauseLedger.onForeground(group, now + grace)
+        assertThat(PauseLedger.isInside(group, now + grace)).isFalse()
+    }
+
+    @Test
+    fun `hopping through other apps does not restart the grace`() {
+        PauseLedger.enter(group)
+        PauseLedger.onForeground(launcher, now)
+        PauseLedger.onForeground("com.android.chrome", now + grace / 2)
+        assertThat(PauseLedger.isInside(group, now + grace)).isFalse()
+    }
+
+    @Test
+    fun `the same subject reaching the front is not stepping away - a group switch`() {
+        PauseLedger.enter(group)
+        PauseLedger.onForeground(group, now)
+        assertThat(PauseLedger.isInside(group, now + 10 * grace)).isTrue()
+    }
+
+    @Test
+    fun `an early lock leaves at once`() {
+        PauseLedger.enter(group)
+        PauseLedger.ignoreAfterEarlyLock(group, now)
+        assertThat(PauseLedger.isInside(group, now)).isFalse()
+    }
+
+    @Test
+    fun `a pause going up leaves at once - the open it guarded is over`() {
+        PauseLedger.enter(group)
+        PauseLedger.begin(group)
+        assertThat(PauseLedger.isInside(group, now)).isFalse()
+    }
+
+    @Test
+    fun `leave only clears its own subject`() {
+        PauseLedger.enter(group)
+        PauseLedger.leave("limit:2")
+        assertThat(PauseLedger.isInside(group, now)).isTrue()
+        PauseLedger.leave(group)
+        assertThat(PauseLedger.isInside(group, now)).isFalse()
+    }
 }

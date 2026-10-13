@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import com.anchor.domain.LimitDecision
 import com.anchor.domain.LimitGate
+import com.anchor.domain.PauseLedger
 import com.anchor.service.PauseSubject
 
 /**
@@ -15,6 +16,8 @@ import com.anchor.service.PauseSubject
 object SessionEndScreens {
     suspend fun intentFor(context: Context, limitGate: LimitGate, packageName: String): Intent? {
         val subject = PauseSubject.of(packageName, limitGate.limitFor(packageName))
+        // The session is over; coming back through recents must not count as inside.
+        PauseLedger.leave(subject)
         return when (val next = limitGate.afterSessionCap(packageName)) {
             is LimitDecision.Pause -> PauseActivity.intent(context, next.seconds, packageName, subject)
             is LimitDecision.Blocked -> LimitBlockedActivity.intent(context, next.reason, next.resetsAtMillis, packageName)
