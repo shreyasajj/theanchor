@@ -32,6 +32,10 @@ pause. All five are independent of the Evening Anchor and apply 24 hours a day.
 
 ### 1.2 Derived state, not counters
 
+> **Superseded for opens** by `2026-10-12-continue-counted-opens-design.md`:
+> opens, the session start and the close after an open are now recorded when
+> the pause lets the user in. Minutes and "in front" still come from the log.
+
 **Decision: the app stores no usage counters.** At each decision it queries
 `UsageStatsManager.queryEvents()` over the current day-window and derives
 elapsed time, open count, and last-close time from the raw event list.

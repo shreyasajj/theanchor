@@ -265,6 +265,30 @@ emulator whose location updates.
    appears, not the limit screen with "Open anyway".
 7. Flip the HA kill switch: the app opens.
 
+## 7l. Opens count when the pause lets you in
+
+Not yet run on the emulator: the test machine was short of disk space when this
+landed (2026-10-12).
+
+1. Install the previous build, add a limit, then install this one over it
+   (`adb install -r`). Verify the app opens without a crash and the limit is
+   still there.
+2. Give an app 2 opens/day, a 10-minute cooldown and no session length. Open it,
+   then **Close** from the pause. Verify the dashboard shows **0 opens** and no
+   cooldown, and that opening it again shows the pause, not "Not just yet".
+3. Open it and press **Continue**. Verify the dashboard shows 1 open.
+4. Inside the app, move between screens for a few minutes. Verify the pause
+   never reappears.
+5. Switch to Messages for about 20 seconds and come back. Verify no pause and
+   still 1 open.
+6. Go home for more than a minute and open it again. Verify the pause appears;
+   Continue makes it 2 opens. Use it, go home for over a minute, reopen: verify
+   it is blocked as spent.
+7. Give an app a 5-minute session. Continue, and verify the session-end screen
+   arrives five minutes after the **Continue press**, not after the launch.
+8. Breathe instead of continuing and go in after the sit. Verify it counts as
+   one open.
+
 ## 8. Persistence across a reboot
 
 ```bash
