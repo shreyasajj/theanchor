@@ -60,7 +60,31 @@ after the 60s pause grace (`PauseLedger.SATISFIED_WINDOW_MILLIS`) is paused
 again and Continue is a new open. The old 60s coalescing of log sessions no
 longer exists.
 
-### 1.3 Upgrade
+### 1.3 Inside an open
+
+The gate is asked again on in-app window changes, not only on launches (the
+service debounces repeats of one package for just 3s). The old code kept a
+running open from counting against itself by discounting it when the app was
+in front by the log. That signal is gone: a new launch's flash is also "in
+front by the log", so discounting it would let a spent budget through.
+
+Instead the app remembers, in memory, which limit the user is **inside**:
+
+- **Entered** when a limited app reaches the front and is let through: while
+  the pause is satisfied, or when the gate answers `Allow`.
+- **Left** when any other subject reaches the front (another app, the
+  launcher, the in-call screen). Ignored windows (keyboard, notification
+  shade, our own screens) do not leave. Switching between members of a group
+  does not leave: they share the subject.
+- **Left** on an early lock.
+
+While inside, `LimitGate.decide` returns `Allow` unless the minute budget is
+spent, exactly as for a rejoin. The open is not charged again and the pause
+is not shown again. Process death forgets it; the next in-app change is then
+judged as a launch. That is rare, and it is the same exposure as today's 60s
+satisfied window.
+
+### 1.4 Upgrade
 
 Opens before this version are not in the table, so on the day of the upgrade
 the open count restarts from zero. From the next reset it is exact. No
@@ -163,9 +187,26 @@ building and group merging (`buildSessions`) stay as they are.
 - `rejoinsOpen` drops the `MIN_ESTABLISHED_OPEN_MILLIS` check and the
   constant. The flash can no longer start an open, so there is nothing to
   guard against. The early-lock, owed-pause and unfinished-pause checks stay.
+- Step 0 of `decide` treats `PauseLedger.isInside(subject)` like a rejoin
+  (§1.3).
 - `spentBudget` compares `summary.openUnits >= dailyOpens` directly;
   `unitsBeforeThisOpen` goes. `afterSessionCap` drops its
   `copy(currentSessionStartAtMillis = null)`.
+- `lockEarly` also leaves the subject.
+
+### 2.4a `PauseLedger` and the service
+
+```kotlin
+fun enter(subject: String)
+fun isInside(subject: String): Boolean
+/** A subject reached the front: leaves any other. */
+fun onForeground(subject: String)
+```
+
+In `AnchorAccessibilityService`'s `EvaluateEvening` branch, right after the
+subject is computed: `PauseLedger.onForeground(subject)`. The satisfied
+short-circuit becomes `enter(subject)` then return, and a `Route.None`
+outcome for a limited app also enters.
 - `dashboardUsage`: each member's `perApp` summary gets the rows filtered to
   its `packageName`.
 
@@ -173,8 +214,10 @@ building and group merging (`buildSessions`) stay as they are.
 
 - `LimitStatus.sessionEndsAt` and `SessionCapMath.remainingMillis` already
   read `lastOpenStartAtMillis`, which now means "when the user was let in".
-  `LimitStatus` drops its own `openUnits - lastOpenUnits` adjustment the same
-  way `LimitGate` does.
+  `LimitStatus` drops its own `openUnits - lastOpenUnits` adjustment. An app
+  in front with the time budget left reads as `InSession(null, true)`
+  before the open count is checked: the dashboard is not the gate, and
+  "spent" while you are using the last open would be misleading.
 - `SessionCapWatcher` needs no change. The flash arms a full-length timer;
   when it fires it re-reads the remaining time, sees the newer open and
   re-arms to Continue + session length. If the user closed from the pause,
@@ -202,7 +245,11 @@ Unit (JVM):
   - rejoin inside the session from the row, not after it; early lock ends it;
   - cooldown measured from a close after the row;
   - a limit window counts only rows inside it;
-  - `recordOpen` prunes rows older than 48h.
+  - `recordOpen` prunes rows older than 48h;
+  - inside the last open, an in-app re-check is `Allow`, not `Blocked`;
+    after leaving, the next launch is `Blocked(DAILY_OPENS)`.
+- `PauseLedgerTest`: enter / leave on another subject / stay on the same
+  subject / leave on early lock.
 - `LimitStatusTest`, `BudgetSummaryTest`, `SessionCapWatcherTest` (which
   holds the `SessionCapMath` tests): updated to the new summary shape.
 
