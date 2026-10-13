@@ -216,10 +216,10 @@ class PauseActivity : ComponentActivity() {
     /** The wait was served: let the app through. */
     private fun continueToApp() {
         completed = true
-        PauseLedger.complete(subject, System.currentTimeMillis())
+        val firstTap = PauseLedger.complete(subject, System.currentTimeMillis())
         lifecycleScope.launch { settingsRepository.settlePause(subject) }
         // Being let in is the open. On the app scope: finish() would cancel it here.
-        if (countsAsOpen) appScope.launch { limitGate.recordOpen(blockedPackage, subject) }
+        if (countsAsOpen && firstTap) appScope.launch { limitGate.recordOpen(blockedPackage, subject) }
         finish()
     }
 

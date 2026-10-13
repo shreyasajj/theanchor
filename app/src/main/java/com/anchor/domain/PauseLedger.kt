@@ -142,12 +142,17 @@ object PauseLedger {
         leave(subject)
     }
 
-    /** The user sat through the wait, or meditated instead. Let them in. */
-    fun complete(subject: String, nowMillis: Long) {
-        if (subject.isEmpty()) return
+    /**
+     * The user sat through the wait, or meditated instead. Let them in.
+     *
+     * @return true the first time a shown pause is finished, so a second tap
+     *   on Continue before the screen goes away is not a second open
+     */
+    fun complete(subject: String, nowMillis: Long): Boolean {
+        if (subject.isEmpty()) return false
         satisfiedUntil[subject] = nowMillis + SATISFIED_WINDOW_MILLIS
-        unfinished.remove(subject)
         abandoned.remove(subject)
+        return unfinished.remove(subject) != null
     }
 
     /**

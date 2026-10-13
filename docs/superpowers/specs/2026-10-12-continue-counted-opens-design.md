@@ -230,7 +230,9 @@ fun onForeground(subject: String, nowMillis: Long)
 fun leave(subject: String)
 ```
 
-`SessionEndScreens.intentFor` calls `leave` when the session cap fires.
+No call is needed when the session cap fires: the cap only runs for limits
+with a session length, which never read "inside", and the pause it shows
+leaves through `begin`.
 
 In `AnchorAccessibilityService`'s `EvaluateEvening` branch, right after the
 subject is computed: `PauseLedger.onForeground(subject)`. The satisfied

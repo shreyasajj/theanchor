@@ -204,4 +204,16 @@ class PauseLedgerTest {
         PauseLedger.stepAway(now + grace / 2)
         assertThat(PauseLedger.isInside(group, now + grace)).isFalse()
     }
+
+    @Test
+    fun `finishing a shown pause reports the first time only - a double tap is one open`() {
+        PauseLedger.begin(group)
+        assertThat(PauseLedger.complete(group, now)).isTrue()
+        assertThat(PauseLedger.complete(group, now + 50)).isFalse()
+    }
+
+    @Test
+    fun `finishing a pause that was never shown is not a first time`() {
+        assertThat(PauseLedger.complete(group, now)).isFalse()
+    }
 }

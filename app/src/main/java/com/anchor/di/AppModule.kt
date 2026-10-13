@@ -2,6 +2,7 @@ package com.anchor.di
 
 import android.content.Context
 import android.net.Uri
+import android.util.Log
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
@@ -36,6 +37,7 @@ import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -155,10 +157,18 @@ object AppModule {
 
     // --- Background work ---
 
+    /**
+     * Anything thrown here would otherwise reach the thread's uncaught
+     * handler and kill the process, accessibility service included. Log it
+     * and carry on: nothing launched here is worth the phone's protection.
+     */
     @Provides
     @Singleton
     @ApplicationScope
-    fun provideApplicationScope(): CoroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    fun provideApplicationScope(): CoroutineScope = CoroutineScope(
+        Dispatchers.IO + SupervisorJob() +
+            CoroutineExceptionHandler { _, e -> Log.w("Anchor", "background work failed", e) }
+    )
 
     // --- Usage ---
 

@@ -14,6 +14,7 @@ import com.anchor.data.usage.UsageCalculator
 import com.anchor.data.usage.UsageEvent
 import com.anchor.data.usage.UsageEventMapping
 import com.anchor.data.usage.UsageStatsSource
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
@@ -197,14 +198,24 @@ class LimitGate @Inject constructor(
      * The pause let the user into [packageName]: that is the open. Nothing is
      * recorded for a subject that is not a limit (an evening-only pause).
      * Old opens and early locks are pruned here, the one place both grow.
+     *
+     * A failed write (a full disk) loses the open rather than crashing the
+     * process, which would take the accessibility service down with it. The
+     * fail-open rule: a lost open is one more the user gets, never one fewer.
      */
     suspend fun recordOpen(packageName: String, subject: String) {
         if (!subject.startsWith(AppLimit.SUBJECT_PREFIX)) return
         val now = anchorDate.nowMillis()
-        limitOpenDao.insert(LimitOpen(subject = subject, packageName = packageName, atMillis = now))
-        val cutoff = now - PRUNE_AFTER_MILLIS
-        limitOpenDao.prune(cutoff)
-        earlyLockDao.prune(cutoff)
+        try {
+            limitOpenDao.insert(LimitOpen(subject = subject, packageName = packageName, atMillis = now))
+            val cutoff = now - PRUNE_AFTER_MILLIS
+            limitOpenDao.prune(cutoff)
+            earlyLockDao.prune(cutoff)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Nothing to show the user; the open is simply not counted.
+        }
     }
 
     /** The limit in force for [packageName] right now, if any. */

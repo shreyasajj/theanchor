@@ -125,7 +125,9 @@ seed_limit() {
   adb_e shell am start -W -n "$PKG/.ui.MainActivity" >/dev/null 2>&1 || true
   sleep 4
   adb_e shell am force-stop "$PKG" || true
-  local sql="INSERT OR REPLACE INTO app_limit (packageName, enabled, dailyMinutes, dailyOpens, cooldownMinutes, sessionMinutes, preOpenDelaySeconds) VALUES ('$VICTIM', 1, 30, 5, 20, 10, 30);"
+  # Limits are groups since schema 4: a newline-joined package set, keyed by
+  # an autoincrement id, so clear any earlier seed rather than replace it.
+  local sql="DELETE FROM app_limit WHERE packages = '$VICTIM'; INSERT INTO app_limit (name, packages, enabled, limitMode, dailyMinutes, dailyOpens, cooldownMinutes, sessionMinutes, preOpenDelaySeconds, windowStartMinute, windowEndMinute) VALUES ('', '$VICTIM', 1, 'OPENS', 30, 5, 20, 10, 30, NULL, NULL);"
   if adb_e shell "run-as $PKG sqlite3 $db \"$sql\"" 2>/dev/null; then
     log "limit seeded"
   else

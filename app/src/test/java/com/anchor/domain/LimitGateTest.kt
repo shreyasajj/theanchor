@@ -119,6 +119,29 @@ class LimitGateTest {
         assertThat(db.earlyLockDao().since(subject, 0)).isEmpty()
     }
 
+    @Test
+    fun `a failed write loses the open instead of crashing - fail open`() = runTest {
+        val subject = limit(AppLimit(app, dailyOpens = 1))
+        val broken = object : com.anchor.data.usage.LimitOpenDao {
+            override suspend fun insert(open: LimitOpen) = throw android.database.sqlite.SQLiteFullException("disk full")
+            override suspend fun since(subject: String, fromMillis: Long) = emptyList<LimitOpen>()
+            override suspend fun prune(beforeMillis: Long) = Unit
+        }
+        val gate = LimitGate(
+            limits = DaoLimitLookup(db.appLimitDao()),
+            earlyLockDao = db.earlyLockDao(),
+            limitOpenDao = broken,
+            usageStatsSource = FakeSource(emptyList()),
+            killSwitch = KillSwitch(FakeHaClient(HaResult.Unavailable)),
+            anchorDate = AnchorDate(clock),
+            settingsProvider = { AnchorSettings() },
+        )
+
+        gate.recordOpen(app, subject)
+
+        assertThat(gate.decide(app)).isEqualTo(LimitDecision.Pause(0))
+    }
+
     // --- No configuration ---
 
     @Test

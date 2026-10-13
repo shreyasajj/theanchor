@@ -150,11 +150,11 @@ class MeditationActivity : ComponentActivity() {
     private fun openAnyway() {
         resolved = true
         subject?.let { subject ->
-            PauseLedger.complete(subject, System.currentTimeMillis())
+            val firstTap = PauseLedger.complete(subject, System.currentTimeMillis())
             lifecycleScope.launch { settingsRepository.settlePause(subject) }
             // Going in after the sit is the open, as Continue would be.
             val pkg = blockedPackage
-            if (countsAsOpen && pkg != null) appScope.launch { limitGate.recordOpen(pkg, subject) }
+            if (countsAsOpen && firstTap && pkg != null) appScope.launch { limitGate.recordOpen(pkg, subject) }
         }
         finish()
     }
