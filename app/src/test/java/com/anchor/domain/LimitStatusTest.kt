@@ -43,7 +43,7 @@ class LimitStatusTest {
     fun `in session while the open is younger than the session length`() {
         val start = now - 4 * minute
         val running = AppUsageSummary(
-            opens = 1, openUnits = 1.0, lastOpenUnits = 1.0,
+            opens = 1, openUnits = 1.0,
             lastOpenStartAtMillis = start, currentSessionStartAtMillis = start,
         )
         assertThat(status(opens, running))
@@ -54,8 +54,8 @@ class LimitStatusTest {
     fun `a session left is still a session until it elapses`() {
         val start = now - 4 * minute
         val left = AppUsageSummary(
-            opens = 1, openUnits = 1.0, lastOpenUnits = 1.0,
-            lastOpenStartAtMillis = start, lastOpenEndAtMillis = now - minute,
+            opens = 1, openUnits = 1.0,
+            lastOpenStartAtMillis = start,
             lastForegroundEndAtMillis = now - minute,
         )
         assertThat(status(opens, left))
@@ -66,7 +66,7 @@ class LimitStatusTest {
     fun `an early lock ends the session`() {
         val start = now - 4 * minute
         val left = AppUsageSummary(
-            opens = 1, openUnits = 1.0, lastOpenUnits = 1.0,
+            opens = 1, openUnits = 1.0,
             lastOpenStartAtMillis = start, lastForegroundEndAtMillis = now - minute,
         )
         assertThat(status(opens, left, lastEarlyLock = now - minute))
@@ -82,7 +82,7 @@ class LimitStatusTest {
 
     @Test
     fun `spent when finished opens reach the budget`() {
-        val done = AppUsageSummary(opens = 2, openUnits = 2.0, lastOpenUnits = 1.0, lastOpenStartAtMillis = now - 30 * minute)
+        val done = AppUsageSummary(opens = 2, openUnits = 2.0, lastOpenStartAtMillis = now - 30 * minute)
         assertThat(status(opens, done)).isEqualTo(LimitStatus.Spent(resetsAtMillis = reset))
     }
 
@@ -92,7 +92,7 @@ class LimitStatusTest {
         // the second open, so the day is not spent; it is simply in use.
         val start = now - 30 * minute
         val running = AppUsageSummary(
-            opens = 2, openUnits = 2.0, lastOpenUnits = 1.0,
+            opens = 2, openUnits = 2.0,
             lastOpenStartAtMillis = start, currentSessionStartAtMillis = start,
         )
         assertThat(status(opens, running)).isEqualTo(LimitStatus.InSession(endsAtMillis = null, inForeground = true))
@@ -111,7 +111,7 @@ class LimitStatusTest {
     @Test
     fun `cooldown after closing`() {
         val closed = AppUsageSummary(
-            opens = 1, openUnits = 1.0, lastOpenUnits = 1.0,
+            opens = 1, openUnits = 1.0,
             lastOpenStartAtMillis = now - 20 * minute, lastForegroundEndAtMillis = now - 2 * minute,
         )
         assertThat(status(opens, closed)).isEqualTo(LimitStatus.Cooldown(untilMillis = now + 3 * minute))
@@ -120,7 +120,7 @@ class LimitStatusTest {
     @Test
     fun `available once the cooldown has passed`() {
         val closed = AppUsageSummary(
-            opens = 1, openUnits = 1.0, lastOpenUnits = 1.0,
+            opens = 1, openUnits = 1.0,
             lastOpenStartAtMillis = now - 20 * minute, lastForegroundEndAtMillis = now - 6 * minute,
         )
         assertThat(status(opens, closed)).isEqualTo(LimitStatus.Available)
@@ -129,7 +129,7 @@ class LimitStatusTest {
     @Test
     fun `an app with no session length in front now is in use`() {
         val plain = AppLimit("x", dailyOpens = 3)
-        val running = AppUsageSummary(opens = 1, openUnits = 1.0, lastOpenUnits = 1.0, currentSessionStartAtMillis = now - minute)
+        val running = AppUsageSummary(opens = 1, openUnits = 1.0, currentSessionStartAtMillis = now - minute)
         assertThat(status(plain, running)).isEqualTo(LimitStatus.InSession(endsAtMillis = null, inForeground = true))
     }
 }

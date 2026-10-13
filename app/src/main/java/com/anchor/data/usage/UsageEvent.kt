@@ -13,38 +13,26 @@ data class UsageEvent(
 }
 
 /**
- * What a limit's apps did within a usage-day window.
- *
- * An "open" is a run of one or more foreground sessions that belong
- * together: a quick re-entry (under a minute) or, when the limit has a
- * session length, any return while that session still has foreground time
- * left and the apps were left for less than the session length.
+ * What a limit's apps did within a usage-day window. Opens come from the
+ * recorded opens; time and "in front" come from the usage log.
  *
  * @param foregroundMillis time in the foreground within the window
- * @param opens whole opens within the window, ignoring weights
- * @param openUnits opens as charged against the budget; today every open
- *   costs one, so this equals [opens]
- * @param lastOpenUnits what the most recent open cost, so a running open can
- *   be discounted when deciding whether a launch is over budget
- * @param lastForegroundEndAtMillis end of the most recent *completed*
- *   session, considering events before the window too: a cooldown is a
- *   rolling gap and must survive the daily reset
+ * @param opens recorded opens within the window
+ * @param openUnits opens as charged against the budget; every open costs one
+ * @param lastForegroundEndAtMillis end of the last completed session after
+ *   the latest open, considering opens before the window too: a cooldown is
+ *   a rolling gap and must survive the daily reset. Null when nothing was
+ *   left since the latest open, so a flash closed from the pause starts no
+ *   cooldown.
  * @param currentSessionStartAtMillis non-null when an app is foreground now
- * @param lastOpenStartAtMillis when the most recent open began, whether or
- *   not it is still running; what a return would rejoin
- * @param lastOpenEndAtMillis when the most recent open was last left, or
- *   null while it is running
- * @param currentOpenForegroundMillis foreground time inside the most recent
- *   open, up to now; the session clock
+ * @param lastOpenStartAtMillis when the latest open was recorded; the
+ *   session clock runs from here
  */
 data class AppUsageSummary(
     val foregroundMillis: Long = 0,
     val opens: Int = 0,
     val openUnits: Double = 0.0,
-    val lastOpenUnits: Double = 0.0,
     val lastForegroundEndAtMillis: Long? = null,
     val currentSessionStartAtMillis: Long? = null,
     val lastOpenStartAtMillis: Long? = null,
-    val lastOpenEndAtMillis: Long? = null,
-    val currentOpenForegroundMillis: Long = 0,
 )

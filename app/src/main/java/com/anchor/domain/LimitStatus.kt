@@ -51,12 +51,14 @@ sealed interface LimitStatus {
             if (sessionEnd != null) {
                 return if (timeSpent) Spent(resetsAtMillis) else InSession(sessionEnd, inFront)
             }
+            if (timeSpent) return Spent(resetsAtMillis)
 
-            val finishedUnits = if (inFront) summary.openUnits - summary.lastOpenUnits else summary.openUnits
-            val opensSpent = limit.effectiveDailyOpens?.let { finishedUnits >= it } ?: false
-            if (opensSpent || timeSpent) return Spent(resetsAtMillis)
-
+            // In front with time left is in use, even on the last open: the
+            // dashboard reports, it does not block.
             if (inFront) return InSession(endsAtMillis = null, inForeground = true)
+
+            val opensSpent = limit.effectiveDailyOpens?.let { summary.openUnits >= it } ?: false
+            if (opensSpent) return Spent(resetsAtMillis)
 
             limit.cooldownMinutes?.let { cooldown ->
                 val lastEnd = listOfNotNull(summary.lastForegroundEndAtMillis, lastEarlyLock).maxOrNull()

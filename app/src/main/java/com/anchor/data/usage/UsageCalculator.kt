@@ -1,17 +1,12 @@
 package com.anchor.data.usage
 
 /**
- * Derives usage from a raw event list. Pure by design: the app deliberately
- * keeps no counters, because counters drift, are lost when the process dies,
- * and double-count when the accessibility service restarts mid-session.
+ * Derives usage from the raw event log and the recorded opens. Pure by
+ * design. Opens are recorded, not derived: the log cannot tell an open from
+ * the app flashing in front before the pause covers it. Time and "in front"
+ * still come from the log, where the flash adds well under a second.
  */
 object UsageCalculator {
-
-    /**
-     * Two sessions closer together than this are one "open". Without it,
-     * glancing at the notification shade would burn an open.
-     */
-    const val OPEN_COALESCE_WINDOW_MILLIS = 60_000L
 
     private data class Session(val start: Long, val end: Long?)
 
@@ -21,11 +16,8 @@ object UsageCalculator {
         packageName: String,
         windowStartMillis: Long,
         nowMillis: Long,
-        sessionWindowMillis: Long? = null,
-        earlyLocksMillis: List<Long> = emptyList(),
-    ): AppUsageSummary = summarize(
-        events, setOf(packageName), windowStartMillis, nowMillis, sessionWindowMillis, earlyLocksMillis,
-    )
+        opensMillis: List<Long>,
+    ): AppUsageSummary = summarize(events, setOf(packageName), windowStartMillis, nowMillis, opensMillis)
 
     /**
      * Whether a return [openAgeMillis] after the open began continues it. A
@@ -38,76 +30,39 @@ object UsageCalculator {
     /**
      * @param packageNames the apps sharing one limit; their sessions are
      *   merged and counted as one.
-     * @param sessionWindowMillis when set (the limit's session length), a
-     *   return inside that long of the open's start continues it instead of
-     *   starting a new one; after it, any return is a new open.
-     * @param earlyLocksMillis times the user voluntarily locked the app early.
-     *   An early lock always ends the open in progress, so the next entry is
-     *   a new open however soon it comes.
+     * @param opensMillis when the pause let the user in, from before the
+     *   window too, so a session or cooldown straddling the reset is seen.
      */
     fun summarize(
         events: List<UsageEvent>,
         packageNames: Set<String>,
         windowStartMillis: Long,
         nowMillis: Long,
-        sessionWindowMillis: Long? = null,
-        earlyLocksMillis: List<Long> = emptyList(),
+        opensMillis: List<Long>,
     ): AppUsageSummary {
         val sessions = buildSessions(events, packageNames, nowMillis)
-        if (sessions.isEmpty()) return AppUsageSummary()
 
-        var foregroundMillis = 0L
-        var opens = 0
-        var openUnits = 0.0
-        var lastOpenUnits = 0.0
-        var openStart: Long? = null
-        var openForeground = 0L
-        var previousEnd: Long? = null
-
-        sessions.forEach { session ->
-            val sessionEnd = minOf(session.end ?: nowMillis, nowMillis)
-
-            // Time: clip the session to the window.
-            val effectiveStart = maxOf(session.start, windowStartMillis)
-            if (sessionEnd > effectiveStart) {
-                foregroundMillis += sessionEnd - effectiveStart
-            }
-
-            // Was the previous open ended on purpose before this session began?
-            val lockedSince = previousEnd != null &&
-                earlyLocksMillis.any { it >= previousEnd!! && it <= session.start }
-
-            val rejoinsOpen = openStart != null && previousEnd != null && !lockedSince && (
-                if (sessionWindowMillis != null) rejoins(session.start - openStart!!, sessionWindowMillis)
-                else session.start - previousEnd!! < OPEN_COALESCE_WINDOW_MILLIS
-                )
-
-            if (!rejoinsOpen) {
-                openStart = session.start
-                openForeground = 0L
-                lastOpenUnits = 0.0
-                // Opens: only those that actually began inside the window.
-                if (session.start >= windowStartMillis) {
-                    opens++
-                    lastOpenUnits = 1.0
-                    openUnits += lastOpenUnits
-                }
-            }
-            if (sessionEnd > session.start) openForeground += sessionEnd - session.start
-            previousEnd = session.end
+        // Time: each session clipped to the window and to now.
+        val foregroundMillis = sessions.sumOf { session ->
+            val end = minOf(session.end ?: nowMillis, nowMillis)
+            (end - maxOf(session.start, windowStartMillis)).coerceAtLeast(0)
         }
 
-        val running = sessions.last().end == null
+        val opens = opensMillis.count { it >= windowStartMillis }
+        val lastOpen = opensMillis.maxOrNull()
+
+        // Only a departure after the open is a close; the flash before it is not.
+        val lastClose = lastOpen?.let { open ->
+            sessions.lastOrNull { it.end != null && it.end > open }?.end
+        }
+
         return AppUsageSummary(
             foregroundMillis = foregroundMillis,
             opens = opens,
-            openUnits = openUnits,
-            lastOpenUnits = lastOpenUnits,
-            lastForegroundEndAtMillis = sessions.lastOrNull { it.end != null }?.end,
-            currentSessionStartAtMillis = sessions.last().takeIf { it.end == null }?.start,
-            lastOpenStartAtMillis = openStart,
-            lastOpenEndAtMillis = if (running) null else sessions.last().end,
-            currentOpenForegroundMillis = openForeground,
+            openUnits = opens.toDouble(),
+            lastForegroundEndAtMillis = lastClose,
+            currentSessionStartAtMillis = sessions.lastOrNull()?.takeIf { it.end == null }?.start,
+            lastOpenStartAtMillis = lastOpen,
         )
     }
 

@@ -23,19 +23,6 @@ import javax.inject.Singleton
 
 enum class LimitReason { DAILY_TIME, DAILY_OPENS, COOLDOWN, SESSION_CAP }
 
-/**
- * How long an open must have been running before returning to it counts as
- * rejoining rather than opening afresh.
- *
- * Launching an app emits a foreground event and then, a fraction of a second
- * later, a background one: a splash handing over to the real activity, or the
- * launcher animation settling. Showing the pause screen does the same. Any of
- * those look identical to "the user left", so without a floor the very first
- * launch of an app reads as a return to an open that is 200ms old, and the
- * pause is skipped for good.
- */
-const val MIN_ESTABLISHED_OPEN_MILLIS = 15_000L
-
 /** One limit's day, as the dashboard sees it. */
 data class LimitUsage(
     val limit: AppLimit,
@@ -157,13 +144,12 @@ class LimitGate @Inject constructor(
     }
 
     /**
-     * A spent open count or time budget, whichever applies. The launch being
-     * decided is a new open; if its own foreground event has already landed
-     * it is the running open, and a running open never counts against itself.
+     * A spent open count or time budget, whichever applies. Opens are only
+     * the recorded ones, so the launch being decided has not counted yet.
      */
     private fun spentBudget(limit: AppLimit, summary: AppUsageSummary, resetsAt: Long): LimitDecision.Blocked? {
         limit.effectiveDailyOpens?.let { maxOpens ->
-            if (unitsBeforeThisOpen(summary) >= maxOpens) return LimitDecision.Blocked(LimitReason.DAILY_OPENS, resetsAt)
+            if (summary.openUnits >= maxOpens) return LimitDecision.Blocked(LimitReason.DAILY_OPENS, resetsAt)
         }
         limit.effectiveDailyMinutes?.let { maxMinutes ->
             if (summary.foregroundMillis >= maxMinutes * 60_000L) return LimitDecision.Blocked(LimitReason.DAILY_TIME, resetsAt)
@@ -185,8 +171,7 @@ class LimitGate @Inject constructor(
         val settings = settingsProvider()
         val usage = summarize(limit, settings, now)
         val summary = usage.summary
-        // Counting the open just ended: it is over, so it counts.
-        spentBudget(limit, summary.copy(currentSessionStartAtMillis = null), resetsAt(limit, settings))
+        spentBudget(limit, summary, resetsAt(limit, settings))
             ?.let { return it }
         limit.cooldownMinutes?.let { cooldown ->
             return LimitDecision.Blocked(LimitReason.SESSION_CAP, now + cooldown * 60_000L)
@@ -277,7 +262,8 @@ class LimitGate @Inject constructor(
         if (active.isEmpty()) return emptyMap()
         val events = usageStatsSource.events(from, now)
         return active.associateWith { limit ->
-            summarize(limit, settings, now, dayStart, events, earlyLockDao.since(limit.subject, from)).summary
+            summarize(limit, now, dayStart, events, earlyLockDao.since(limit.subject, from), limitOpenDao.since(limit.subject, from))
+                .summary
         }
     }
 
@@ -297,13 +283,16 @@ class LimitGate @Inject constructor(
         val events = usageStatsSource.events(from, now)
         return active.map { limit ->
             val earlyLocks = earlyLockDao.since(limit.subject, from)
-            val usage = summarize(limit, settings, now, dayStart, events, earlyLocks)
+            val opens = limitOpenDao.since(limit.subject, from)
+            val usage = summarize(limit, now, dayStart, events, earlyLocks, opens)
             val budgetStart = budgetStartMillis(limit, dayStart)
             LimitUsage(
                 limit = limit,
                 summary = usage.summary,
                 perApp = limit.packages.associateWith { pkg ->
-                    UsageCalculator.summarize(events, pkg, budgetStart, now)
+                    UsageCalculator.summarize(
+                        events, pkg, budgetStart, now, opens.filter { it.packageName == pkg }.map { it.atMillis },
+                    )
                 },
                 status = LimitStatus.of(
                     limit = limit,
@@ -349,17 +338,10 @@ class LimitGate @Inject constructor(
     private fun isBypassed(limit: AppLimit, settings: AnchorSettings): Boolean =
         Streak.isBypassed(settings.limitBypasses, limit.subject, anchorDate.usageDay(settings.dayResetMinute))
 
-    /** Opens that are already over, and so count against a new one. */
-    private fun unitsBeforeThisOpen(summary: AppUsageSummary): Double =
-        if (summary.currentSessionStartAtMillis != null) summary.openUnits - summary.lastOpenUnits
-        else summary.openUnits
-
     /**
      * True when a launch now would continue the previous open rather than
-     * start a new one: the open began less than a session ago, it has run
-     * long enough to be a real session (otherwise this launch *is* the open,
-     * whose own foreground event may already be logged), it was not ended
-     * early on purpose, and its pause was actually served.
+     * start a new one: the open began less than a session ago, it was not
+     * ended early on purpose, and its pause was actually served.
      *
      * That last condition matters more than it looks. Showing the pause screen
      * pushes the app into the background, which logs exactly the same
@@ -377,7 +359,6 @@ class LimitGate @Inject constructor(
         val window = limit.sessionMinutes?.let { it * 60_000L } ?: return false
         val openStart = summary.lastOpenStartAtMillis ?: return false
         if (pauseOwed || PauseLedger.hasUnfinishedPause(limit.subject)) return false
-        if (now - openStart < MIN_ESTABLISHED_OPEN_MILLIS) return false
         if (!UsageCalculator.rejoins(now - openStart, window)) return false
 
         val lockedSince = lastEarlyLock?.let { it >= openStart } ?: false
@@ -390,27 +371,27 @@ class LimitGate @Inject constructor(
         val dayStart = anchorDate.usageDayStartMillis(settings.dayResetMinute)
         val from = UsageEventMapping.queryFrom(dayStart)
         return summarize(
-            limit, settings, nowMillis, dayStart,
+            limit, nowMillis, dayStart,
             usageStatsSource.events(from, nowMillis),
             earlyLockDao.since(limit.subject, from),
+            limitOpenDao.since(limit.subject, from),
         )
     }
 
     private fun summarize(
         limit: AppLimit,
-        settings: AnchorSettings,
         nowMillis: Long,
         dayStart: Long,
         events: List<UsageEvent>,
         earlyLocks: List<Long>,
+        opens: List<LimitOpen>,
     ): Usage = Usage(
         summary = UsageCalculator.summarize(
             events = events,
             packageNames = limit.packages,
             windowStartMillis = budgetStartMillis(limit, dayStart),
             nowMillis = nowMillis,
-            sessionWindowMillis = limit.sessionMinutes?.let { it * 60_000L },
-            earlyLocksMillis = earlyLocks,
+            opensMillis = opens.map { it.atMillis },
         ),
         lastEarlyLock = earlyLocks.lastOrNull(),
     )
