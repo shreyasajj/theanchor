@@ -222,4 +222,36 @@ class UsageCalculatorTest {
 
         assertThat(s.foregroundMillis).isEqualTo(6 * minute)
     }
+
+    // --- Ending early costs half ---
+
+    private fun units(opens: List<Long>, locks: List<Long>, nowMinutes: Long = 60) =
+        UsageCalculator.summarize(
+            emptyList(), app, windowStart, nowMinutes * minute,
+            opensMillis = opens.map { it * minute }, earlyLocksMillis = locks.map { it * minute },
+        )
+
+    @Test
+    fun `an open ended by an early lock costs half`() {
+        val s = units(opens = listOf(10, 30), locks = listOf(15))
+        assertThat(s.opens).isEqualTo(2)
+        assertThat(s.openUnits).isEqualTo(1.5)
+    }
+
+    @Test
+    fun `the lock belongs to the open it falls in, the latest one included`() {
+        assertThat(units(opens = listOf(10, 30), locks = listOf(35)).openUnits).isEqualTo(1.5)
+        assertThat(units(opens = listOf(10, 30), locks = listOf(5)).openUnits).isEqualTo(2.0)
+    }
+
+    @Test
+    fun `two locks in one open still halve it only once`() {
+        assertThat(units(opens = listOf(10), locks = listOf(12, 14)).openUnits).isEqualTo(0.5)
+    }
+
+    @Test
+    fun `an early-locked open before the window is not charged at all`() {
+        assertThat(units(opens = listOf(-30, 10), locks = listOf(-25)).openUnits).isEqualTo(1.0)
+    }
+
 }

@@ -18,7 +18,8 @@ data class UsageEvent(
  *
  * @param foregroundMillis time in the foreground within the window
  * @param opens recorded opens within the window
- * @param openUnits opens as charged against the budget; every open costs one
+ * @param openUnits opens as charged against the budget: one each, half for
+ *   an open ended early with the lock button
  * @param lastForegroundEndAtMillis end of the last completed session after
  *   the latest open, considering opens before the window too: a cooldown is
  *   a rolling gap and must survive the daily reset. Null when nothing was

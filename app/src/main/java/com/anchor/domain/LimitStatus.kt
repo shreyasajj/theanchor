@@ -57,7 +57,7 @@ sealed interface LimitStatus {
             // dashboard reports, it does not block.
             if (inFront) return InSession(endsAtMillis = null, inForeground = true)
 
-            val opensSpent = limit.effectiveDailyOpens?.let { summary.openUnits >= it } ?: false
+            val opensSpent = limit.effectiveDailyOpens?.let { OpenBudget.isSpent(summary.openUnits, it) } ?: false
             if (opensSpent) return Spent(resetsAtMillis)
 
             limit.cooldownMinutes?.let { cooldown ->

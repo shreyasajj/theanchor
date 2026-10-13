@@ -148,11 +148,12 @@ class LimitGate @Inject constructor(
 
     /**
      * A spent open count or time budget, whichever applies. Opens are only
-     * the recorded ones, so the launch being decided has not counted yet.
+     * the recorded ones, so the launch being decided has not counted yet; it
+     * needs a whole open left (see [OpenBudget]).
      */
     private fun spentBudget(limit: AppLimit, summary: AppUsageSummary, resetsAt: Long): LimitDecision.Blocked? {
         limit.effectiveDailyOpens?.let { maxOpens ->
-            if (summary.openUnits >= maxOpens) return LimitDecision.Blocked(LimitReason.DAILY_OPENS, resetsAt)
+            if (OpenBudget.isSpent(summary.openUnits, maxOpens)) return LimitDecision.Blocked(LimitReason.DAILY_OPENS, resetsAt)
         }
         limit.effectiveDailyMinutes?.let { maxMinutes ->
             if (summary.foregroundMillis >= maxMinutes * 60_000L) return LimitDecision.Blocked(LimitReason.DAILY_TIME, resetsAt)

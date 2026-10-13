@@ -106,7 +106,23 @@ is not shown again. Process death forgets it; the next in-app change is then
 judged as a launch. That is rare, and it is the same exposure as today's 60s
 satisfied window.
 
-### 1.4 Upgrade
+### 1.4 Ending early costs half
+
+An open the user ends with the floating lock button ("Lock it") costs
+**0.5**. One that runs out its session, or that the user simply leaves,
+costs 1. A lock belongs to the open it falls in, between that open and the
+next; two locks in one open still halve it once.
+
+A new open needs a **whole** open left (`OpenBudget.isSpent`: `dailyOpens -
+used < 1`). Halves only help once two of them add up, so a day never goes
+over budget. The gate, the dashboard status and the dashboard's red bar all
+use this one rule. Opening and locking at once costs half, so a budget of 2
+allows four quick looks; that is the reward for stopping, accepted.
+
+No new data: early locks are already recorded, and the calculator weighs
+each open from them.
+
+### 1.5 Upgrade
 
 Opens before this version are not in the table, so on the day of the upgrade
 the open count restarts from zero. From the next reset it is exact. No

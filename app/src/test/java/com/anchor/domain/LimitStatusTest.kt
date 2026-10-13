@@ -132,4 +132,10 @@ class LimitStatusTest {
         val running = AppUsageSummary(opens = 1, openUnits = 1.0, currentSessionStartAtMillis = now - minute)
         assertThat(status(plain, running)).isEqualTo(LimitStatus.InSession(endsAtMillis = null, inForeground = true))
     }
+
+    @Test
+    fun `half an open left reads as spent - a new open needs a whole one`() {
+        val done = AppUsageSummary(opens = 2, openUnits = 1.5, lastOpenStartAtMillis = now - 30 * minute)
+        assertThat(status(opens, done)).isEqualTo(LimitStatus.Spent(resetsAtMillis = reset))
+    }
 }

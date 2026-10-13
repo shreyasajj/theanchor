@@ -46,8 +46,9 @@ object UsageCalculator {
      *   window too, so a session or cooldown straddling the reset is seen.
      * @param sessionWindowMillis the limit's session length, if it has one:
      *   returns inside it belong to the open.
-     * @param earlyLocksMillis times the user locked the app early; one after
-     *   the latest open ends it there.
+     * @param earlyLocksMillis times the user locked the app early. One
+     *   ends the open it falls in, which then costs half; one after the
+     *   latest open also ends that open's run of sessions there.
      */
     fun summarize(
         events: List<UsageEvent>,
@@ -67,6 +68,7 @@ object UsageCalculator {
         }
 
         val opens = opensMillis.count { it >= windowStartMillis }
+        val openUnits = openUnits(opensMillis, windowStartMillis, earlyLocksMillis)
         val lastOpen = opensMillis.maxOrNull()
 
         val lastClose = lastOpen?.let { openRunEnd(sessions, it, sessionWindowMillis, earlyLocksMillis) }
@@ -74,12 +76,30 @@ object UsageCalculator {
         return AppUsageSummary(
             foregroundMillis = foregroundMillis,
             opens = opens,
-            openUnits = opens.toDouble(),
+            openUnits = openUnits,
             lastForegroundEndAtMillis = lastClose,
             currentSessionStartAtMillis = sessions.lastOrNull()?.takeIf { it.end == null }?.start,
             lastOpenStartAtMillis = lastOpen,
         )
     }
+
+    /**
+     * What the opens inside the window cost: one each, or half for one the
+     * user ended early with the lock button, rewarding stopping before the
+     * session made them. A lock belongs to the open it falls in, between
+     * that open and the next.
+     */
+    private fun openUnits(opensMillis: List<Long>, windowStartMillis: Long, earlyLocksMillis: List<Long>): Double {
+        val sorted = opensMillis.sorted()
+        return sorted.withIndex().sumOf { (i, open) ->
+            if (open < windowStartMillis) return@sumOf 0.0
+            val next = sorted.getOrNull(i + 1) ?: Long.MAX_VALUE
+            if (earlyLocksMillis.any { it >= open && it < next }) EARLY_LOCK_COST else 1.0
+        }
+    }
+
+    /** What an open ended early with the lock button costs. */
+    const val EARLY_LOCK_COST = 0.5
 
     /**
      * Where the user last left the open that began at [open]. A session is

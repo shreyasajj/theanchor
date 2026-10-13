@@ -16,6 +16,7 @@ import com.anchor.domain.EveningSit
 import com.anchor.domain.LimitGate
 import com.anchor.domain.LimitStatus
 import com.anchor.domain.LimitUsage
+import com.anchor.domain.OpenBudget
 import com.anchor.domain.Streak
 import com.anchor.ui.settings.sections.formatMinute
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -58,7 +59,7 @@ data class UsageRow(
 
     val isExhausted: Boolean
         get() = (limitMinutes != null && usedMinutes >= limitMinutes) ||
-            (limitOpens != null && openUnits >= limitOpens)
+            (limitOpens != null && OpenBudget.isSpent(openUnits, limitOpens))
 }
 
 /** One column in the seven-day strip. */

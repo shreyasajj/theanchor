@@ -609,10 +609,32 @@ class LimitGateTest {
         val events = listOf(fg(100), bg(105), fg(110), bg(120))
         val summary = gate(events = events).summaryFor(app)
         assertThat(summary.opens).isEqualTo(2)
-        assertThat(summary.openUnits).isEqualTo(2.0)
-        // Both opens are over, so the third launch is blocked.
+        // The locked one costs half: 1.5 of 2, and half is not enough to start one.
+        assertThat(summary.openUnits).isEqualTo(1.5)
         val decision = gate(events = events).decide(app)
         assertThat((decision as LimitDecision.Blocked).reason).isEqualTo(LimitReason.DAILY_OPENS)
+    }
+
+    @Test
+    fun `two early locks give back one open`() = runTest {
+        val subject = limit(AppLimit(app, dailyOpens = 2))
+        opened(subject, 100)
+        db.earlyLockDao().insert(EarlyLock(subject = subject, atMillis = dayStartMillis + 105 * minute))
+        opened(subject, 200)
+        db.earlyLockDao().insert(EarlyLock(subject = subject, atMillis = dayStartMillis + 205 * minute))
+        val events = listOf(fg(100), bg(105), fg(200), bg(205))
+        assertThat(gate(events = events).decide(app)).isEqualTo(LimitDecision.Pause(0))
+    }
+
+    @Test
+    fun `half an open left is not enough to start one`() = runTest {
+        val subject = limit(AppLimit(app, dailyOpens = 2))
+        opened(subject, 100)
+        db.earlyLockDao().insert(EarlyLock(subject = subject, atMillis = dayStartMillis + 105 * minute))
+        opened(subject, 200)
+        val events = listOf(fg(100), bg(105), fg(200), bg(230))
+        val decision = gate(events = events).decide(app) as LimitDecision.Blocked
+        assertThat(decision.reason).isEqualTo(LimitReason.DAILY_OPENS)
     }
 
     // --- Pre-open pause ---

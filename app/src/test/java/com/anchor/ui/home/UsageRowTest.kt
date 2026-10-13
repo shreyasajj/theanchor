@@ -48,6 +48,12 @@ class UsageRowTest {
     fun `not exhausted when neither limit is set`() {
         assertThat(row(used = 500, limit = null).isExhausted).isFalse()
     }
+
+    @Test
+    fun `exhausted with half an open left - a new open needs a whole one`() {
+        val row = UsageRow(label = "x", usedMinutes = 0, limitMinutes = null, opens = 2, limitOpens = 2, openUnits = 1.5)
+        assertThat(row.isExhausted).isTrue()
+    }
 }
 
 class LimitRowTextTest {

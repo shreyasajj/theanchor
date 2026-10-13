@@ -123,7 +123,8 @@ skipped; with it off, confirm the evening pause still appears.
    verify it stays where you put it, including after leaving and returning.
 4. Tap it. Verify a "Lock <app> now?" sheet appears. "Not yet" dismisses it
    and the button comes back. "Lock it" shows the pause screen at once.
-   Continue: verify you are back in the app and the dashboard shows 2 opens.
+   Continue: verify you are back in the app and the dashboard shows 1.5 opens
+   (the locked open costs half).
    Lock again and Close: verify you are home, and the next open is asked.
 5. Tap it again on a later open. Verify it prompts **every** time, not just
    the first.
@@ -288,6 +289,11 @@ landed (2026-10-12).
    arrives five minutes after the **Continue press**, not after the launch.
 8. Breathe instead of continuing and go in after the sit. Verify it counts as
    one open.
+9. Double-tap Continue as fast as you can. Verify the dashboard goes up by one.
+10. With 2 opens/day: open, lock early with the floating button, Close. Verify
+    the dashboard shows 0.5 of 2. Repeat: 1 of 2, and a third open is allowed.
+    Open again and leave without locking: 2 of 2, spent. Separately, reach 1.5
+    of 2 and verify the next launch is blocked: half is not enough to start.
 
 ## 8. Persistence across a reboot
 
