@@ -86,4 +86,18 @@ class MigrationsTest {
             db.close()
         }
     }
+
+    @Test
+    fun `opens can be recorded after the upgrade`() = runTest {
+        createVersion3()
+        val db = open()
+        try {
+            db.limitOpenDao().insert(
+                com.anchor.data.usage.LimitOpen(subject = "limit:1", packageName = "com.y", atMillis = 7L)
+            )
+            assertThat(db.limitOpenDao().since("limit:1", 0).map { it.atMillis }).containsExactly(7L)
+        } finally {
+            db.close()
+        }
+    }
 }

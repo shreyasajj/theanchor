@@ -8,6 +8,8 @@ import com.anchor.data.usage.AppLimit
 import com.anchor.data.usage.AppLimitDao
 import com.anchor.data.usage.EarlyLock
 import com.anchor.data.usage.EarlyLockDao
+import com.anchor.data.usage.LimitOpen
+import com.anchor.data.usage.LimitOpenDao
 import com.anchor.data.usage.LimitMode
 import com.anchor.data.usage.MeditationSession
 import com.anchor.data.usage.MeditationSessionDao
@@ -37,8 +39,9 @@ class PackageSetConverter {
         AppLimit::class,
         EarlyLock::class,
         MeditationSession::class,
+        LimitOpen::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = false,
 )
 @TypeConverters(PhaseConverter::class, LimitModeConverter::class, PackageSetConverter::class)
@@ -48,4 +51,5 @@ abstract class AnchorDatabase : RoomDatabase() {
     abstract fun appLimitDao(): AppLimitDao
     abstract fun earlyLockDao(): EarlyLockDao
     abstract fun meditationSessionDao(): MeditationSessionDao
+    abstract fun limitOpenDao(): LimitOpenDao
 }

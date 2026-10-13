@@ -25,6 +25,7 @@ import com.anchor.data.settings.SettingsRepository
 import com.anchor.data.usage.AndroidUsageStatsSource
 import com.anchor.data.usage.AppLimitDao
 import com.anchor.data.usage.EarlyLockDao
+import com.anchor.data.usage.LimitOpenDao
 import com.anchor.data.usage.MeditationSessionDao
 import com.anchor.data.usage.UsageStatsSource
 import com.anchor.domain.CachedLimitLookup
@@ -85,6 +86,8 @@ object AppModule {
     @Provides fun provideAppLimitDao(db: AnchorDatabase): AppLimitDao = db.appLimitDao()
 
     @Provides fun provideEarlyLockDao(db: AnchorDatabase): EarlyLockDao = db.earlyLockDao()
+
+    @Provides fun provideLimitOpenDao(db: AnchorDatabase): LimitOpenDao = db.limitOpenDao()
 
     @Provides
     fun provideMeditationSessionDao(db: AnchorDatabase): MeditationSessionDao = db.meditationSessionDao()
