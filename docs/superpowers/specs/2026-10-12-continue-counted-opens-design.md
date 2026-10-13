@@ -72,11 +72,27 @@ Instead the app remembers, in memory, which limit the user is **inside**:
 
 - **Entered** when a limited app reaches the front and is let through: while
   the pause is satisfied, or when the gate answers `Allow`.
-- **Left** when any other subject reaches the front (another app, the
-  launcher, the in-call screen). Ignored windows (keyboard, notification
-  shade, our own screens) do not leave. Switching between members of a group
-  does not leave: they share the subject.
-- **Left** on an early lock.
+- **Stepped away** when any other subject reaches the front (another app,
+  the launcher, the in-call screen). Coming back within the **60s return
+  grace** (`PauseLedger.RETURN_GRACE_MILLIS`), counted from the first step
+  away, is still inside: no pause, no open. Hopping through several other
+  apps does not restart the grace. Past it, the open is over and the next
+  launch is a new one.
+- Ignored windows (keyboard, notification shade, our own screens) are not
+  stepping away. Switching between members of a group is not either: they
+  share the subject.
+- **Left at once**, with no grace, when a pause goes up for the subject (a
+  session-cap pause included), when the session cap ends it, or on an early
+  lock.
+
+This replaces the old "two sessions under 60s apart are one open" rule, now
+measured from leaving rather than read from the log.
+
+**Only limits without a session length use it.** A limit with one already
+defines the open by its session: returning inside the session is a rejoin,
+and once it has elapsed the open is over. Letting "inside" apply there would
+let a session run out while the user is away and then wave them back in for
+a fresh one.
 
 While inside, `LimitGate.decide` returns `Allow` unless the minute budget is
 spent, exactly as for a rejoin. The open is not charged again and the pause
@@ -187,8 +203,8 @@ building and group merging (`buildSessions`) stay as they are.
 - `rejoinsOpen` drops the `MIN_ESTABLISHED_OPEN_MILLIS` check and the
   constant. The flash can no longer start an open, so there is nothing to
   guard against. The early-lock, owed-pause and unfinished-pause checks stay.
-- Step 0 of `decide` treats `PauseLedger.isInside(subject)` like a rejoin
-  (§1.3).
+- Step 0 of `decide` treats `PauseLedger.isInside(subject, now)` like a
+  rejoin, for a limit with no session length (§1.3).
 - `spentBudget` compares `summary.openUnits >= dailyOpens` directly;
   `unitsBeforeThisOpen` goes. `afterSessionCap` drops its
   `copy(currentSessionStartAtMillis = null)`.
@@ -197,11 +213,17 @@ building and group merging (`buildSessions`) stay as they are.
 ### 2.4a `PauseLedger` and the service
 
 ```kotlin
+const val RETURN_GRACE_MILLIS = 60_000L
 fun enter(subject: String)
-fun isInside(subject: String): Boolean
-/** A subject reached the front: leaves any other. */
-fun onForeground(subject: String)
+/** Inside, or stepped away less than the grace ago. */
+fun isInside(subject: String, nowMillis: Long): Boolean
+/** A subject reached the front: steps away from any other, or returns. */
+fun onForeground(subject: String, nowMillis: Long)
+/** Ends the open at once, no grace. */
+fun leave(subject: String)
 ```
+
+`SessionEndScreens.intentFor` calls `leave` when the session cap fires.
 
 In `AnchorAccessibilityService`'s `EvaluateEvening` branch, right after the
 subject is computed: `PauseLedger.onForeground(subject)`. The satisfied
@@ -247,9 +269,12 @@ Unit (JVM):
   - a limit window counts only rows inside it;
   - `recordOpen` prunes rows older than 48h;
   - inside the last open, an in-app re-check is `Allow`, not `Blocked`;
-    after leaving, the next launch is `Blocked(DAILY_OPENS)`.
-- `PauseLedgerTest`: enter / leave on another subject / stay on the same
-  subject / leave on early lock.
+    after the grace has passed, the next launch is `Blocked(DAILY_OPENS)`;
+  - a limit with a session length ignores "inside".
+- `PauseLedgerTest`: enter; back within the grace is inside; past it is
+  not, and coming back does not restore it; hopping between other apps
+  keeps the first departure time; same subject is not a departure; a pause
+  or an early lock leaves at once.
 - `LimitStatusTest`, `BudgetSummaryTest`, `SessionCapWatcherTest` (which
   holds the `SessionCapMath` tests): updated to the new summary shape.
 

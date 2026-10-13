@@ -4,7 +4,7 @@
 
 **Goal:** Count an open of a limited app only when the pause screen lets the user in, and run the session clock and cooldown from that moment, so the flash before the pause stops costing an open.
 
-**Architecture:** A new Room table `limit_open` gets one row per Continue (or finished breathe). `UsageCalculator` takes those open times as input and keeps using the usage log only for foreground minutes, "in front" checks and the close after an open. An in-memory "inside" marker in `PauseLedger` replaces the old "running open doesn't count against itself" discount, which depended on the log.
+**Architecture:** A new Room table `limit_open` gets one row per Continue (or finished breathe). `UsageCalculator` takes those open times as input and keeps using the usage log only for foreground minutes, "in front" checks and the close after an open. An in-memory "inside" marker in `PauseLedger`, with a 60s return grace, replaces the old "running open doesn't count against itself" discount, which depended on the log.
 
 **Tech Stack:** Kotlin, Room (KSP), Hilt, Coroutines, JUnit4 + Robolectric + Truth.
 
@@ -24,7 +24,7 @@
 1. **Recents back into the app after a session-cap screen**: must not be waved through as "inside". The cap ends the open. Pinned in Task 4 (`SessionEndScreens` leaves; `begin` leaves; ledger test).
 2. **Launcher flashing during the Continue hand-off**: the app must still be let in, and still be entered. Service wiring in Task 4 Step 5 (the satisfied short-circuit enters after `onForeground`); the service has no unit tests, so this is checked on the emulator in Task 5 Step 3.
 3. **Upgrading a v4 install**: must open without a Room validation crash. Pinned in Task 1 (`MigrationsTest` 3→5 plus `limit_open` usable).
-4. **In-app window changes during the last open (no session length)**: must not block. Pinned in Task 4 (`LimitGateTest` inside test).
+4. **In-app window changes during the last open (no session length)**: must not block, and a quick hop to another app and back must not cost an open. Pinned in Task 4 (`LimitGateTest` inside and grace tests).
 5. **Closing from the pause, then relaunching within the cooldown length**: no cooldown, no open charged. Pinned in Task 3 (`LimitGateTest` flash tests).
 
 ---
@@ -877,7 +877,7 @@ now come from the recorded opens."
 
 ---
 
-### Task 4: Inside an open
+### Task 4: Inside an open, with a 60s return grace
 
 **Files:**
 - Modify: `app/src/main/java/com/anchor/domain/PauseLedger.kt`
@@ -888,7 +888,7 @@ now come from the recorded opens."
 
 **Interfaces:**
 - Consumes: `LimitGate.decide`, `PauseLedger` (existing).
-- Produces: `PauseLedger.enter(subject)`, `PauseLedger.isInside(subject): Boolean`, `PauseLedger.onForeground(subject)`, `PauseLedger.leave(subject)`.
+- Produces: `PauseLedger.RETURN_GRACE_MILLIS = 60_000L`, `PauseLedger.enter(subject: String)`, `PauseLedger.isInside(subject: String, nowMillis: Long): Boolean`, `PauseLedger.onForeground(subject: String, nowMillis: Long)`, `PauseLedger.leave(subject: String)`.
 
 - [ ] **Step 1: Write the failing ledger tests**
 
@@ -898,53 +898,73 @@ Append to `PauseLedgerTest`:
     // --- Inside an open ---
 
     private val group = "limit:1"
+    private val launcher = "com.android.launcher"
+    private val grace = PauseLedger.RETURN_GRACE_MILLIS
 
     @Test
     fun `entering marks the subject inside`() {
         PauseLedger.enter(group)
-        assertThat(PauseLedger.isInside(group)).isTrue()
-        assertThat(PauseLedger.isInside("limit:2")).isFalse()
+        assertThat(PauseLedger.isInside(group, now)).isTrue()
+        assertThat(PauseLedger.isInside("limit:2", now)).isFalse()
     }
 
     @Test
-    fun `another subject reaching the front leaves`() {
+    fun `back within the grace is still inside`() {
         PauseLedger.enter(group)
-        PauseLedger.onForeground("com.android.launcher")
-        assertThat(PauseLedger.isInside(group)).isFalse()
+        PauseLedger.onForeground(launcher, now)
+        PauseLedger.onForeground(group, now + grace - 1)
+        assertThat(PauseLedger.isInside(group, now + 10 * grace)).isTrue()
     }
 
     @Test
-    fun `the same subject reaching the front stays inside - a group switch`() {
+    fun `away past the grace is out, and coming back does not restore it`() {
         PauseLedger.enter(group)
-        PauseLedger.onForeground(group)
-        assertThat(PauseLedger.isInside(group)).isTrue()
+        PauseLedger.onForeground(launcher, now)
+        assertThat(PauseLedger.isInside(group, now + grace)).isFalse()
+        PauseLedger.onForeground(group, now + grace)
+        assertThat(PauseLedger.isInside(group, now + grace)).isFalse()
     }
 
     @Test
-    fun `an early lock leaves`() {
+    fun `hopping through other apps does not restart the grace`() {
+        PauseLedger.enter(group)
+        PauseLedger.onForeground(launcher, now)
+        PauseLedger.onForeground("com.android.chrome", now + grace / 2)
+        assertThat(PauseLedger.isInside(group, now + grace)).isFalse()
+    }
+
+    @Test
+    fun `the same subject reaching the front is not stepping away - a group switch`() {
+        PauseLedger.enter(group)
+        PauseLedger.onForeground(group, now)
+        assertThat(PauseLedger.isInside(group, now + 10 * grace)).isTrue()
+    }
+
+    @Test
+    fun `an early lock leaves at once`() {
         PauseLedger.enter(group)
         PauseLedger.ignoreAfterEarlyLock(group, now)
-        assertThat(PauseLedger.isInside(group)).isFalse()
+        assertThat(PauseLedger.isInside(group, now)).isFalse()
     }
 
     @Test
-    fun `a pause going up leaves - the open it guarded is over`() {
+    fun `a pause going up leaves at once - the open it guarded is over`() {
         PauseLedger.enter(group)
         PauseLedger.begin(group)
-        assertThat(PauseLedger.isInside(group)).isFalse()
+        assertThat(PauseLedger.isInside(group, now)).isFalse()
     }
 
     @Test
     fun `leave only clears its own subject`() {
         PauseLedger.enter(group)
         PauseLedger.leave("limit:2")
-        assertThat(PauseLedger.isInside(group)).isTrue()
+        assertThat(PauseLedger.isInside(group, now)).isTrue()
         PauseLedger.leave(group)
-        assertThat(PauseLedger.isInside(group)).isFalse()
+        assertThat(PauseLedger.isInside(group, now)).isFalse()
     }
 ```
 
-And to `LimitGateTest` (replacing the deleted running-open test):
+And to `LimitGateTest` (replacing the deleted running-open test). `clock.millis()` is 660 minutes after the day start:
 
 ```kotlin
     @Test
@@ -955,10 +975,29 @@ And to `LimitGateTest` (replacing the deleted running-open test):
         val events = listOf(fg(10), bg(15), fg(600))
         PauseLedger.enter(s)
         assertThat(gate(events = events).decide(app)).isEqualTo(LimitDecision.Allow)
+    }
 
-        // Left for the launcher: the next launch is a new open, and there are none left.
-        PauseLedger.onForeground("com.android.launcher")
-        val decision = gate(events = events + bg(605)).decide(app) as LimitDecision.Blocked
+    @Test
+    fun `back from a quick hop inside the grace is the same open`() = runTest {
+        val s = limit(AppLimit(app, dailyOpens = 2))
+        opened(s, 10)
+        opened(s, 600)
+        PauseLedger.enter(s)
+        PauseLedger.onForeground("com.google.android.apps.messaging", clock.millis() - 20_000)
+        PauseLedger.onForeground(s, clock.millis())
+        val events = listOf(fg(10), bg(15), fg(600))
+        assertThat(gate(events = events).decide(app)).isEqualTo(LimitDecision.Allow)
+    }
+
+    @Test
+    fun `back after the grace is a new open, and there are none left`() = runTest {
+        val s = limit(AppLimit(app, dailyOpens = 2))
+        opened(s, 10)
+        opened(s, 600)
+        PauseLedger.enter(s)
+        PauseLedger.onForeground("com.android.launcher", dayStartMillis + 605 * minute)
+        val events = listOf(fg(10), bg(15), fg(600), bg(605))
+        val decision = gate(events = events).decide(app) as LimitDecision.Blocked
         assertThat(decision.reason).isEqualTo(LimitReason.DAILY_OPENS)
     }
 
@@ -970,12 +1009,22 @@ And to `LimitGateTest` (replacing the deleted running-open test):
         val decision = gate(events = listOf(fg(600))).decide(app) as LimitDecision.Blocked
         assertThat(decision.reason).isEqualTo(LimitReason.DAILY_TIME)
     }
+
+    @Test
+    fun `a limit with a session length ignores inside - the session is the open`() = runTest {
+        // Session from 600 ran out at 610; being marked inside must not wave
+        // the user back in for a fresh one.
+        val s = limit(AppLimit(app, sessionMinutes = 10, preOpenDelaySeconds = 30))
+        opened(s, 600)
+        PauseLedger.enter(s)
+        assertThat(gate(events = listOf(fg(600), bg(608))).decide(app)).isEqualTo(LimitDecision.Pause(30))
+    }
 ```
 
 - [ ] **Step 2: Run to verify they fail**
 
 Run: `./gradlew :app:testDebugUnitTest --tests 'com.anchor.domain.PauseLedgerTest' --tests 'com.anchor.domain.LimitGateTest' --no-daemon`
-Expected: compilation FAIL, unresolved `enter` / `isInside` / `onForeground` / `leave`.
+Expected: compilation FAIL, unresolved `enter` / `isInside` / `onForeground` / `leave` / `RETURN_GRACE_MILLIS`.
 
 - [ ] **Step 3: Implement in `PauseLedger`**
 
@@ -983,32 +1032,60 @@ Add the import `java.util.concurrent.atomic.AtomicReference` and, after `abandon
 
 ```kotlin
     /**
-     * The limit the user is inside right now: let in, and not left since.
-     * The gate is asked again on in-app window changes, and the usage log
-     * cannot tell those from a fresh launch's flash; this can. Only one
-     * subject can be in front at a time, so one slot is enough.
+     * How long the user may step away from an open and come back to the
+     * same one: pasting a link into Messages, glancing at a reply. The old
+     * usage-log rule merged sessions under a minute apart; this keeps that,
+     * measured from leaving.
      */
-    private val inside = AtomicReference<String?>(null)
+    const val RETURN_GRACE_MILLIS = 60_000L
+
+    /** [leftAtMillis] is null while the subject is in front. */
+    private data class Inside(val subject: String, val leftAtMillis: Long?)
+
+    /**
+     * The limit the user is inside: let in, and not away longer than the
+     * grace. The gate is asked again on in-app window changes, and the usage
+     * log cannot tell those from a fresh launch's flash; this can. Only one
+     * subject is in front at a time, so one slot is enough.
+     */
+    private val inside = AtomicReference<Inside?>(null)
 
     /** A limited app reached the front and was let through. */
     fun enter(subject: String) {
-        if (subject.isNotEmpty()) inside.set(subject)
+        if (subject.isNotEmpty()) inside.set(Inside(subject, leftAtMillis = null))
     }
 
-    fun isInside(subject: String): Boolean = subject.isNotEmpty() && inside.get() == subject
+    /** Inside [subject], or stepped away from it less than the grace ago. */
+    fun isInside(subject: String, nowMillis: Long): Boolean {
+        val current = inside.get() ?: return false
+        return current.subject == subject && withinGrace(current, nowMillis)
+    }
 
     /**
-     * [subject] reached the front. Anything else is a departure; the same
-     * subject (a group-mate) is not.
+     * [subject] reached the front. Any other subject steps away, keeping the
+     * first departure time so hopping between apps does not stretch the
+     * grace. The same subject (a group-mate, or a return) comes back, if it
+     * is still within the grace.
      */
-    fun onForeground(subject: String) {
-        inside.getAndUpdate { if (it == subject) it else null }
+    fun onForeground(subject: String, nowMillis: Long) {
+        inside.getAndUpdate { current ->
+            when {
+                current == null -> null
+                current.subject == subject ->
+                    if (withinGrace(current, nowMillis)) current.copy(leftAtMillis = null) else null
+                current.leftAtMillis == null -> current.copy(leftAtMillis = nowMillis)
+                else -> current
+            }
+        }
     }
 
-    /** The open in [subject] is over: a session cap, a pause, an early lock. */
+    /** The open in [subject] is over at once, with no grace: a session cap, a pause, an early lock. */
     fun leave(subject: String) {
-        inside.compareAndSet(subject, null)
+        inside.getAndUpdate { if (it?.subject == subject) null else it }
     }
+
+    private fun withinGrace(current: Inside, nowMillis: Long): Boolean =
+        current.leftAtMillis == null || nowMillis - current.leftAtMillis < RETURN_GRACE_MILLIS
 ```
 
 In `ignoreAfterEarlyLock`, after `satisfiedUntil.remove(subject)`, add `leave(subject)`. In `begin`, after `satisfiedUntil.remove(subject)`, add `leave(subject)`. In `reset()`, add `inside.set(null)`.
@@ -1018,22 +1095,23 @@ In `ignoreAfterEarlyLock`, after `satisfiedUntil.remove(subject)`, add `leave(su
 Change step 0's condition and comment:
 
 ```kotlin
-        // 0. Inside the open, or coming back inside its session, is the same
-        //    open: it costs no second open, serves no cooldown and, since the
-        //    pause was served on the way in, is not paused again. Only a
-        //    pause that was walked away from is still owed.
-        if (PauseLedger.isInside(limit.subject) ||
-            rejoinsOpen(limit, summary, now, pauseOwed, usage.lastEarlyLock)
-        ) {
+        // 0. Still inside the open (no session length; see PauseLedger), or
+        //    coming back inside its session, is the same open: it costs no
+        //    second open, serves no cooldown and, since the pause was served
+        //    on the way in, is not paused again. Only a pause that was walked
+        //    away from is still owed.
+        val inside = limit.sessionMinutes == null && PauseLedger.isInside(limit.subject, now)
+        if (inside || rejoinsOpen(limit, summary, now, pauseOwed, usage.lastEarlyLock)) {
 ```
 
 - [ ] **Step 5: Wire the service and the session end**
 
-`AnchorAccessibilityService`, `EvaluateEvening` branch, right after `val subject = PauseSubject.of(target, limit)`:
+`AnchorAccessibilityService`, `EvaluateEvening` branch: move `val now = System.currentTimeMillis()` above `val subject = PauseSubject.of(target, limit)` if it is not already, and right after the subject line add:
 
 ```kotlin
-                    // Anything else in front ends the open the user was inside.
-                    PauseLedger.onForeground(subject)
+                    // Anything else in front steps away from the open the
+                    // user was inside; coming back within the grace returns.
+                    PauseLedger.onForeground(subject, now)
 ```
 
 Replace `if (PauseLedger.isSatisfied(subject, now)) return@launch` with:
@@ -1054,7 +1132,7 @@ and change `is Route.None -> Unit` to:
 `SessionEndScreens.intentFor`, after computing `subject`:
 
 ```kotlin
-        // The session is over; returning through recents must not count as inside.
+        // The session is over; coming back through recents must not count as inside.
         PauseLedger.leave(subject)
 ```
 
@@ -1069,7 +1147,7 @@ Expected: PASS.
 
 ```bash
 git add app/src/main/java/com/anchor/domain/PauseLedger.kt app/src/main/java/com/anchor/domain/LimitGate.kt app/src/main/java/com/anchor/service/AnchorAccessibilityService.kt app/src/main/java/com/anchor/ui/lock/SessionEndScreens.kt app/src/test/java/com/anchor/domain
-git commit -m "feat: an in-app re-check inside an open is not a new launch"
+git commit -m "feat: stepping away for under a minute keeps you in the same open"
 ```
 
 ---
