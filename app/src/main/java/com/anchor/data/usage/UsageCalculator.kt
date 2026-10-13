@@ -1,17 +1,20 @@
 package com.anchor.data.usage
 
 /**
- * Derives usage from a raw event list. Pure by design: the app deliberately
- * keeps no counters, because counters drift, are lost when the process dies,
- * and double-count when the accessibility service restarts mid-session.
+ * Derives usage from the raw event log and the recorded opens. Pure by
+ * design. Opens are recorded, not derived: the log cannot tell an open from
+ * the app flashing in front before the pause covers it. Time and "in front"
+ * still come from the log, where the flash adds well under a second.
  */
 object UsageCalculator {
 
     /**
-     * Two sessions closer together than this are one "open". Without it,
-     * glancing at the notification shade would burn an open.
+     * How long the user may step away from an open without a session length
+     * and come back to the same one. The gate's in-memory view of this lives
+     * in [com.anchor.domain.PauseLedger]; this is the same rule read from the
+     * log, for where the open was left.
      */
-    const val OPEN_COALESCE_WINDOW_MILLIS = 60_000L
+    const val RETURN_GRACE_MILLIS = 60_000L
 
     private data class Session(val start: Long, val end: Long?)
 
@@ -21,10 +24,11 @@ object UsageCalculator {
         packageName: String,
         windowStartMillis: Long,
         nowMillis: Long,
+        opensMillis: List<Long>,
         sessionWindowMillis: Long? = null,
         earlyLocksMillis: List<Long> = emptyList(),
     ): AppUsageSummary = summarize(
-        events, setOf(packageName), windowStartMillis, nowMillis, sessionWindowMillis, earlyLocksMillis,
+        events, setOf(packageName), windowStartMillis, nowMillis, opensMillis, sessionWindowMillis, earlyLocksMillis,
     )
 
     /**
@@ -38,77 +42,97 @@ object UsageCalculator {
     /**
      * @param packageNames the apps sharing one limit; their sessions are
      *   merged and counted as one.
-     * @param sessionWindowMillis when set (the limit's session length), a
-     *   return inside that long of the open's start continues it instead of
-     *   starting a new one; after it, any return is a new open.
-     * @param earlyLocksMillis times the user voluntarily locked the app early.
-     *   An early lock always ends the open in progress, so the next entry is
-     *   a new open however soon it comes.
+     * @param opensMillis when the pause let the user in, from before the
+     *   window too, so a session or cooldown straddling the reset is seen.
+     * @param sessionWindowMillis the limit's session length, if it has one:
+     *   returns inside it belong to the open.
+     * @param earlyLocksMillis times the user locked the app early. One
+     *   ends the open it falls in, which then costs half; one after the
+     *   latest open also ends that open's run of sessions there.
      */
     fun summarize(
         events: List<UsageEvent>,
         packageNames: Set<String>,
         windowStartMillis: Long,
         nowMillis: Long,
+        opensMillis: List<Long>,
         sessionWindowMillis: Long? = null,
         earlyLocksMillis: List<Long> = emptyList(),
     ): AppUsageSummary {
         val sessions = buildSessions(events, packageNames, nowMillis)
-        if (sessions.isEmpty()) return AppUsageSummary()
 
-        var foregroundMillis = 0L
-        var opens = 0
-        var openUnits = 0.0
-        var lastOpenUnits = 0.0
-        var openStart: Long? = null
-        var openForeground = 0L
-        var previousEnd: Long? = null
-
-        sessions.forEach { session ->
-            val sessionEnd = minOf(session.end ?: nowMillis, nowMillis)
-
-            // Time: clip the session to the window.
-            val effectiveStart = maxOf(session.start, windowStartMillis)
-            if (sessionEnd > effectiveStart) {
-                foregroundMillis += sessionEnd - effectiveStart
-            }
-
-            // Was the previous open ended on purpose before this session began?
-            val lockedSince = previousEnd != null &&
-                earlyLocksMillis.any { it >= previousEnd!! && it <= session.start }
-
-            val rejoinsOpen = openStart != null && previousEnd != null && !lockedSince && (
-                if (sessionWindowMillis != null) rejoins(session.start - openStart!!, sessionWindowMillis)
-                else session.start - previousEnd!! < OPEN_COALESCE_WINDOW_MILLIS
-                )
-
-            if (!rejoinsOpen) {
-                openStart = session.start
-                openForeground = 0L
-                lastOpenUnits = 0.0
-                // Opens: only those that actually began inside the window.
-                if (session.start >= windowStartMillis) {
-                    opens++
-                    lastOpenUnits = 1.0
-                    openUnits += lastOpenUnits
-                }
-            }
-            if (sessionEnd > session.start) openForeground += sessionEnd - session.start
-            previousEnd = session.end
+        // Time: each session clipped to the window and to now.
+        val foregroundMillis = sessions.sumOf { session ->
+            val end = minOf(session.end ?: nowMillis, nowMillis)
+            (end - maxOf(session.start, windowStartMillis)).coerceAtLeast(0)
         }
 
-        val running = sessions.last().end == null
+        val opens = opensMillis.count { it >= windowStartMillis }
+        val openUnits = openUnits(opensMillis, windowStartMillis, earlyLocksMillis)
+        val lastOpen = opensMillis.maxOrNull()
+
+        val lastClose = lastOpen?.let { openRunEnd(sessions, it, sessionWindowMillis, earlyLocksMillis) }
+
         return AppUsageSummary(
             foregroundMillis = foregroundMillis,
             opens = opens,
             openUnits = openUnits,
-            lastOpenUnits = lastOpenUnits,
-            lastForegroundEndAtMillis = sessions.lastOrNull { it.end != null }?.end,
-            currentSessionStartAtMillis = sessions.last().takeIf { it.end == null }?.start,
-            lastOpenStartAtMillis = openStart,
-            lastOpenEndAtMillis = if (running) null else sessions.last().end,
-            currentOpenForegroundMillis = openForeground,
+            lastForegroundEndAtMillis = lastClose,
+            currentSessionStartAtMillis = sessions.lastOrNull()?.takeIf { it.end == null }?.start,
+            lastOpenStartAtMillis = lastOpen,
         )
+    }
+
+    /**
+     * What the opens inside the window cost: one each, or half for one the
+     * user ended early with the lock button, rewarding stopping before the
+     * session made them. A lock belongs to the open it falls in, between
+     * that open and the next.
+     */
+    private fun openUnits(opensMillis: List<Long>, windowStartMillis: Long, earlyLocksMillis: List<Long>): Double {
+        val sorted = opensMillis.sorted()
+        return sorted.withIndex().sumOf { (i, open) ->
+            if (open < windowStartMillis) return@sumOf 0.0
+            val next = sorted.getOrNull(i + 1) ?: Long.MAX_VALUE
+            if (earlyLocksMillis.any { it >= open && it < next }) EARLY_LOCK_COST else 1.0
+        }
+    }
+
+    /** What an open ended early with the lock button costs. */
+    const val EARLY_LOCK_COST = 0.5
+
+    /**
+     * Where the user last left the open that began at [open]. A session is
+     * part of the open while it is a return the gate lets straight back in:
+     * inside the session when the limit has one, otherwise within the return
+     * grace of the previous one. The flash before Continue ends before the
+     * open; a later launch's flash, closed from the pause, starts outside it.
+     * Neither can start or stretch a cooldown. An early lock ends the run.
+     * Null while the open's first session is still running, or if the app
+     * never came up after Continue.
+     */
+    private fun openRunEnd(
+        sessions: List<Session>,
+        open: Long,
+        sessionWindowMillis: Long?,
+        earlyLocksMillis: List<Long>,
+    ): Long? {
+        val lockedAt = earlyLocksMillis.filter { it >= open }.minOrNull()
+        var previousEnd = open
+        var close: Long? = null
+        for (session in sessions) {
+            if (session.end != null && session.end <= open) continue
+            if (lockedAt != null && session.start > lockedAt) break
+            val belongs = if (sessionWindowMillis != null) {
+                session.start - open < sessionWindowMillis
+            } else {
+                session.start - previousEnd < RETURN_GRACE_MILLIS
+            }
+            if (!belongs || session.end == null) break
+            close = session.end
+            previousEnd = session.end
+        }
+        return close
     }
 
     /**

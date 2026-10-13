@@ -39,27 +39,35 @@ class AccessibilityRoutingTest {
 
     @Test
     fun `the evening simple delay becomes a five second pause`() {
-        assertThat(LimitRouting.route(LimitDecision.Allow, EveningDecision.SimpleDelay)).isEqualTo(Route.Pause(5))
+        assertThat(LimitRouting.route(LimitDecision.Allow, EveningDecision.SimpleDelay)).isEqualTo(Route.Pause(5, countsAsOpen = false))
+    }
+
+    @Test
+    fun `an evening pause the limit let through is not an open - it is a re-check inside one`() {
+        // Inside an open, the limit says Allow; the evening delay still asks.
+        // Continuing must not record a second open or restart the session.
+        val route = LimitRouting.route(LimitDecision.Allow, EveningDecision.SimpleDelay) as Route.Pause
+        assertThat(route.countsAsOpen).isFalse()
     }
 
     @Test
     fun `a pre-open pause is shown when the evening gate is quiet`() {
-        assertThat(LimitRouting.route(LimitDecision.Pause(30), allowEvening)).isEqualTo(Route.Pause(30))
+        assertThat(LimitRouting.route(LimitDecision.Pause(30), allowEvening)).isEqualTo(Route.Pause(30, countsAsOpen = true))
     }
 
     @Test
     fun `a limit pause with no countdown is still a pause, not nothing`() {
-        assertThat(LimitRouting.route(LimitDecision.Pause(0), allowEvening)).isEqualTo(Route.Pause(0))
+        assertThat(LimitRouting.route(LimitDecision.Pause(0), allowEvening)).isEqualTo(Route.Pause(0, countsAsOpen = true))
     }
 
     @Test
     fun `the evening delay lengthens a countdown-less pause`() {
-        assertThat(LimitRouting.route(LimitDecision.Pause(0), EveningDecision.SimpleDelay)).isEqualTo(Route.Pause(5))
+        assertThat(LimitRouting.route(LimitDecision.Pause(0), EveningDecision.SimpleDelay)).isEqualTo(Route.Pause(5, countsAsOpen = true))
     }
 
     @Test
     fun `a pause and a simple delay collapse into one longer pause`() {
-        assertThat(LimitRouting.route(LimitDecision.Pause(30), EveningDecision.SimpleDelay)).isEqualTo(Route.Pause(30))
+        assertThat(LimitRouting.route(LimitDecision.Pause(30), EveningDecision.SimpleDelay)).isEqualTo(Route.Pause(30, countsAsOpen = true))
     }
 
     @Test

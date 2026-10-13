@@ -16,7 +16,8 @@ object SessionEndScreens {
     suspend fun intentFor(context: Context, limitGate: LimitGate, packageName: String): Intent? {
         val subject = PauseSubject.of(packageName, limitGate.limitFor(packageName))
         return when (val next = limitGate.afterSessionCap(packageName)) {
-            is LimitDecision.Pause -> PauseActivity.intent(context, next.seconds, packageName, subject)
+            // The limit's own question: going in after it is a new open.
+            is LimitDecision.Pause -> PauseActivity.intent(context, next.seconds, packageName, subject, countsAsOpen = true)
             is LimitDecision.Blocked -> LimitBlockedActivity.intent(context, next.reason, next.resetsAtMillis, packageName)
             LimitDecision.Allow -> null
         }

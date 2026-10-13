@@ -29,7 +29,6 @@ class SessionCapWatcherTest {
         val summary = AppUsageSummary(
             currentSessionStartAtMillis = now - minute,
             lastOpenStartAtMillis = now - 4 * minute,
-            currentOpenForegroundMillis = minute,
         )
         assertThat(SessionCapMath.remainingMillis(summary, 10, now)).isEqualTo(6 * minute)
     }
@@ -41,13 +40,13 @@ class SessionCapWatcherTest {
 
     @Test
     fun `a return inside the session keeps counting from the open's start`() {
-        val summary = AppUsageSummary(lastOpenStartAtMillis = now - 6 * minute, lastOpenEndAtMillis = now - 2 * minute)
+        val summary = AppUsageSummary(lastOpenStartAtMillis = now - 6 * minute)
         assertThat(SessionCapMath.remainingMillis(summary, 10, now)).isEqualTo(4 * minute)
     }
 
     @Test
     fun `a return after the session starts fresh`() {
-        val summary = AppUsageSummary(lastOpenStartAtMillis = now - 15 * minute, lastOpenEndAtMillis = now - 14 * minute)
+        val summary = AppUsageSummary(lastOpenStartAtMillis = now - 15 * minute)
         assertThat(SessionCapMath.remainingMillis(summary, 10, now)).isEqualTo(10 * minute)
     }
 

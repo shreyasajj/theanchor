@@ -2,6 +2,7 @@ package com.anchor.di
 
 import android.content.Context
 import android.net.Uri
+import android.util.Log
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
@@ -25,6 +26,7 @@ import com.anchor.data.settings.SettingsRepository
 import com.anchor.data.usage.AndroidUsageStatsSource
 import com.anchor.data.usage.AppLimitDao
 import com.anchor.data.usage.EarlyLockDao
+import com.anchor.data.usage.LimitOpenDao
 import com.anchor.data.usage.MeditationSessionDao
 import com.anchor.data.usage.UsageStatsSource
 import com.anchor.domain.CachedLimitLookup
@@ -35,6 +37,7 @@ import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -85,6 +88,8 @@ object AppModule {
     @Provides fun provideAppLimitDao(db: AnchorDatabase): AppLimitDao = db.appLimitDao()
 
     @Provides fun provideEarlyLockDao(db: AnchorDatabase): EarlyLockDao = db.earlyLockDao()
+
+    @Provides fun provideLimitOpenDao(db: AnchorDatabase): LimitOpenDao = db.limitOpenDao()
 
     @Provides
     fun provideMeditationSessionDao(db: AnchorDatabase): MeditationSessionDao = db.meditationSessionDao()
@@ -149,6 +154,21 @@ object AppModule {
         DocumentStoreFactory { treeUri ->
             runCatching { SafDocumentStore(context, Uri.parse(treeUri)) }.getOrNull()
         }
+
+    // --- Background work ---
+
+    /**
+     * Anything thrown here would otherwise reach the thread's uncaught
+     * handler and kill the process, accessibility service included. Log it
+     * and carry on: nothing launched here is worth the phone's protection.
+     */
+    @Provides
+    @Singleton
+    @ApplicationScope
+    fun provideApplicationScope(): CoroutineScope = CoroutineScope(
+        Dispatchers.IO + SupervisorJob() +
+            CoroutineExceptionHandler { _, e -> Log.w("Anchor", "background work failed", e) }
+    )
 
     // --- Usage ---
 

@@ -34,5 +34,21 @@ object Migrations {
         }
     }
 
-    val ALL: Array<Migration> = arrayOf(MIGRATION_3_4)
+    /**
+     * Opens are recorded when the pause lets the user in, not derived from
+     * the usage log. A new table; nothing else is touched.
+     */
+    val MIGRATION_4_5 = object : Migration(4, 5) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                "CREATE TABLE IF NOT EXISTS `limit_open` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                    "`subject` TEXT NOT NULL, `packageName` TEXT NOT NULL, `atMillis` INTEGER NOT NULL)"
+            )
+            db.execSQL(
+                "CREATE INDEX IF NOT EXISTS `index_limit_open_subject_atMillis` ON `limit_open` (`subject`, `atMillis`)"
+            )
+        }
+    }
+
+    val ALL: Array<Migration> = arrayOf(MIGRATION_3_4, MIGRATION_4_5)
 }

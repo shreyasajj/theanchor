@@ -129,7 +129,7 @@ fun BreathingSit(
     Text(
         text = BreathingGuide.formatClock(BreathingGuide.remainingSeconds(elapsed, minutes)),
         style = MaterialTheme.typography.labelLarge,
-        color = MaterialTheme.colorScheme.outline,
+        color = MaterialTheme.colorScheme.onSurface,
     )
     Spacer(Modifier.height(28.dp))
 

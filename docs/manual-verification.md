@@ -123,7 +123,8 @@ skipped; with it off, confirm the evening pause still appears.
    verify it stays where you put it, including after leaving and returning.
 4. Tap it. Verify a "Lock <app> now?" sheet appears. "Not yet" dismisses it
    and the button comes back. "Lock it" shows the pause screen at once.
-   Continue: verify you are back in the app and the dashboard shows 2 opens.
+   Continue: verify you are back in the app and the dashboard shows 1.5 opens
+   (the locked open costs half).
    Lock again and Close: verify you are home, and the next open is asked.
 5. Tap it again on a later open. Verify it prompts **every** time, not just
    the first.
@@ -264,6 +265,35 @@ emulator whose location updates.
 6. With a daily limit spent and streak mode on, in the bedroom: the bedroom screen
    appears, not the limit screen with "Open anyway".
 7. Flip the HA kill switch: the app opens.
+
+## 7l. Opens count when the pause lets you in
+
+Not yet run on the emulator: the test machine was short of disk space when this
+landed (2026-10-12).
+
+1. Install the previous build, add a limit, then install this one over it
+   (`adb install -r`). Verify the app opens without a crash and the limit is
+   still there.
+2. Give an app 2 opens/day, a 10-minute cooldown and no session length. Open it,
+   then **Close** from the pause. Verify the dashboard shows **0 opens** and no
+   cooldown, and that opening it again shows the pause, not "Not just yet".
+3. Open it and press **Continue**. Verify the dashboard shows 1 open.
+4. Inside the app, move between screens for a few minutes. Verify the pause
+   never reappears.
+5. Switch to Messages for about 20 seconds and come back. Verify no pause and
+   still 1 open.
+6. Go home for more than a minute and open it again. Verify the pause appears;
+   Continue makes it 2 opens. Use it, go home for over a minute, reopen: verify
+   it is blocked as spent.
+7. Give an app a 5-minute session. Continue, and verify the session-end screen
+   arrives five minutes after the **Continue press**, not after the launch.
+8. Breathe instead of continuing and go in after the sit. Verify it counts as
+   one open.
+9. Double-tap Continue as fast as you can. Verify the dashboard goes up by one.
+10. With 2 opens/day: open, lock early with the floating button, Close. Verify
+    the dashboard shows 0.5 of 2. Repeat: 1 of 2, and a third open is allowed.
+    Open again and leave without locking: 2 of 2, spent. Separately, reach 1.5
+    of 2 and verify the next launch is blocked: half is not enough to start.
 
 ## 8. Persistence across a reboot
 

@@ -23,10 +23,13 @@ import androidx.lifecycle.lifecycleScope
 import com.anchor.data.settings.SettingsRepository
 import com.anchor.data.usage.MeditationSession
 import com.anchor.data.usage.MeditationSessionDao
+import com.anchor.di.ApplicationScope
 import com.anchor.domain.AnchorDate
+import com.anchor.domain.LimitGate
 import com.anchor.domain.PauseLedger
 import com.anchor.ui.theme.AnchorTheme
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -43,11 +46,16 @@ class MeditationActivity : ComponentActivity() {
     @Inject lateinit var sessionDao: MeditationSessionDao
     @Inject lateinit var anchorDate: AnchorDate
     @Inject lateinit var settingsRepository: SettingsRepository
+    @Inject lateinit var limitGate: LimitGate
+    @Inject @ApplicationScope lateinit var appScope: CoroutineScope
 
     private var blockedPackage: String? = null
 
     /** The ledger key for the pause this sit may serve. */
     private var subject: String? = null
+
+    /** Whether the pause this sit replaces was the limit's, so going in is an open. */
+    private var countsAsOpen = false
 
     /** Set once the user has chosen what happens next, so onStop can tell
      *  a deliberate exit from simply walking away. */
@@ -58,6 +66,7 @@ class MeditationActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         blockedPackage = intent.getStringExtra(EXTRA_BLOCKED_PACKAGE)?.takeIf { it.isNotEmpty() }
+        countsAsOpen = intent.getBooleanExtra(PauseActivity.EXTRA_COUNTS_AS_OPEN, false)
         subject = intent.getStringExtra(EXTRA_SUBJECT)?.takeIf { it.isNotEmpty() } ?: blockedPackage
         val appLabel = blockedPackage?.let { AppLabels.app(this, it) }
 
@@ -140,9 +149,12 @@ class MeditationActivity : ComponentActivity() {
     /** Sitting served the pause, so going in now is allowed. */
     private fun openAnyway() {
         resolved = true
-        subject?.let {
-            PauseLedger.complete(it, System.currentTimeMillis())
-            lifecycleScope.launch { settingsRepository.settlePause(it) }
+        subject?.let { subject ->
+            val firstTap = PauseLedger.complete(subject, System.currentTimeMillis())
+            lifecycleScope.launch { settingsRepository.settlePause(subject) }
+            // Going in after the sit is the open, as Continue would be.
+            val pkg = blockedPackage
+            if (countsAsOpen && firstTap && pkg != null) appScope.launch { limitGate.recordOpen(pkg, subject) }
         }
         finish()
     }
@@ -172,11 +184,17 @@ class MeditationActivity : ComponentActivity() {
         /** Below this a sit is not worth recording. */
         const val MIN_RECORDED_SECONDS = 20
 
-        fun intent(context: Context, blockedPackage: String? = null, subject: String? = blockedPackage): Intent =
+        fun intent(
+            context: Context,
+            blockedPackage: String? = null,
+            subject: String? = blockedPackage,
+            countsAsOpen: Boolean = false,
+        ): Intent =
             Intent(context, MeditationActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
                 if (blockedPackage != null) putExtra(EXTRA_BLOCKED_PACKAGE, blockedPackage)
                 if (subject != null) putExtra(EXTRA_SUBJECT, subject)
+                putExtra(PauseActivity.EXTRA_COUNTS_AS_OPEN, countsAsOpen)
             }
     }
 }

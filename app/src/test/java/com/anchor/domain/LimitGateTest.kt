@@ -11,6 +11,7 @@ import com.anchor.data.ha.KillSwitch
 import com.anchor.data.settings.AnchorSettings
 import com.anchor.data.usage.AppLimit
 import com.anchor.data.usage.EarlyLock
+import com.anchor.data.usage.LimitOpen
 import com.anchor.data.usage.UsageEvent
 import com.anchor.data.usage.UsageStatsSource
 import com.google.common.truth.Truth.assertThat
@@ -67,6 +68,12 @@ class LimitGateTest {
     /** Stores the limit and returns its ledger subject. */
     private suspend fun limit(limit: AppLimit): String = "limit:${db.appLimitDao().upsert(limit)}"
 
+    /** The pause let the user into [pkg], [minutesAfterDayStart] after the day start. */
+    private suspend fun opened(subject: String, minutesAfterDayStart: Long, pkg: String = app) =
+        db.limitOpenDao().insert(
+            LimitOpen(subject = subject, packageName = pkg, atMillis = dayStartMillis + minutesAfterDayStart * minute)
+        )
+
     private fun gate(
         events: List<UsageEvent> = emptyList(),
         settings: AnchorSettings = AnchorSettings(),
@@ -77,11 +84,62 @@ class LimitGateTest {
         return LimitGate(
             limits = DaoLimitLookup(db.appLimitDao()),
             earlyLockDao = db.earlyLockDao(),
+            limitOpenDao = db.limitOpenDao(),
             usageStatsSource = source,
             killSwitch = KillSwitch(client),
             anchorDate = AnchorDate(clock),
             settingsProvider = { settings },
         )
+    }
+
+    // --- Recording opens ---
+
+    @Test
+    fun `recordOpen writes for a limit and ignores an evening-only pause`() = runTest {
+        val subject = limit(AppLimit(app, dailyOpens = 3))
+        val gate = gate()
+
+        gate.recordOpen(app, subject)
+        gate.recordOpen(app, app)
+
+        assertThat(db.limitOpenDao().since(subject, 0).map { it.atMillis }).containsExactly(clock.millis())
+        assertThat(db.limitOpenDao().since(app, 0)).isEmpty()
+    }
+
+    @Test
+    fun `recordOpen prunes opens and early locks older than two days`() = runTest {
+        val subject = limit(AppLimit(app, dailyOpens = 3))
+        val old = clock.millis() - LimitGate.PRUNE_AFTER_MILLIS - 1
+        db.limitOpenDao().insert(LimitOpen(subject = subject, packageName = app, atMillis = old))
+        db.earlyLockDao().insert(EarlyLock(subject = subject, atMillis = old))
+
+        gate().recordOpen(app, subject)
+
+        assertThat(db.limitOpenDao().since(subject, 0).map { it.atMillis }).containsExactly(clock.millis())
+        assertThat(db.earlyLockDao().since(subject, 0)).isEmpty()
+    }
+
+    @Test
+    fun `a failed write loses the open instead of crashing - fail open`() = runTest {
+        val subject = limit(AppLimit(app, dailyOpens = 1))
+        val broken = object : com.anchor.data.usage.LimitOpenDao {
+            override suspend fun insert(open: LimitOpen) = throw android.database.sqlite.SQLiteFullException("disk full")
+            override suspend fun since(subject: String, fromMillis: Long) = emptyList<LimitOpen>()
+            override suspend fun prune(beforeMillis: Long) = Unit
+        }
+        val gate = LimitGate(
+            limits = DaoLimitLookup(db.appLimitDao()),
+            earlyLockDao = db.earlyLockDao(),
+            limitOpenDao = broken,
+            usageStatsSource = FakeSource(emptyList()),
+            killSwitch = KillSwitch(FakeHaClient(HaResult.Unavailable)),
+            anchorDate = AnchorDate(clock),
+            settingsProvider = { AnchorSettings() },
+        )
+
+        gate.recordOpen(app, subject)
+
+        assertThat(gate.decide(app)).isEqualTo(LimitDecision.Pause(0))
     }
 
     // --- No configuration ---
@@ -139,14 +197,19 @@ class LimitGateTest {
 
     @Test
     fun `allowed while under the open count`() = runTest {
-        db.appLimitDao().upsert(AppLimit(app, dailyOpens = 3))
+        val s = limit(AppLimit(app, dailyOpens = 3))
+        opened(s, 10)
+        opened(s, 60)
         val events = listOf(fg(10), bg(15), fg(60), bg(65))
         assertThat(gate(events = events).decide(app)).isEqualTo(LimitDecision.Pause(0))
     }
 
     @Test
     fun `blocked past the open count`() = runTest {
-        db.appLimitDao().upsert(AppLimit(app, dailyOpens = 2))
+        val s = limit(AppLimit(app, dailyOpens = 2))
+        opened(s, 10)
+        opened(s, 60)
+        opened(s, 120)
         val events = listOf(fg(10), bg(15), fg(60), bg(65), fg(120), bg(125))
         val decision = gate(events = events).decide(app)
 
@@ -157,18 +220,11 @@ class LimitGateTest {
     @Test
     fun `at exactly the open count the next launch is blocked`() = runTest {
         // Two opens done and closed; a third would be one too many.
-        db.appLimitDao().upsert(AppLimit(app, dailyOpens = 2))
+        val s = limit(AppLimit(app, dailyOpens = 2))
+        opened(s, 10)
+        opened(s, 60)
         val events = listOf(fg(10), bg(15), fg(60), bg(65))
         assertThat(gate(events = events).decide(app)).isInstanceOf(LimitDecision.Blocked::class.java)
-    }
-
-    @Test
-    fun `the running open never counts against itself`() = runTest {
-        // Second open of two is in progress (its foreground event landed); a
-        // re-evaluation mid-use must not block it.
-        db.appLimitDao().upsert(AppLimit(app, dailyOpens = 2))
-        val events = listOf(fg(10), bg(15), fg(600))
-        assertThat(gate(events = events).decide(app)).isEqualTo(LimitDecision.Pause(0))
     }
 
     @Test
@@ -179,15 +235,118 @@ class LimitGateTest {
 
     @Test
     fun `in time mode the open budget is ignored`() = runTest {
-        db.appLimitDao().upsert(AppLimit(app, limitMode = LimitMode.TIME, dailyMinutes = 100, dailyOpens = 1))
+        val s = limit(AppLimit(app, limitMode = LimitMode.TIME, dailyMinutes = 100, dailyOpens = 1))
+        opened(s, 10)
+        opened(s, 60)
         assertThat(gate(events = listOf(fg(10), bg(15), fg(60), bg(65))).decide(app)).isEqualTo(LimitDecision.Pause(0))
     }
 
+
+    @Test
+    fun `inside the last open, an in-app re-check lets you stay`() = runTest {
+        val s = limit(AppLimit(app, dailyOpens = 2))
+        opened(s, 10)
+        opened(s, 600)
+        val events = listOf(fg(10), bg(15), fg(600))
+        PauseLedger.enter(s)
+        assertThat(gate(events = events).decide(app)).isEqualTo(LimitDecision.Allow)
+    }
+
+    @Test
+    fun `back from a quick hop inside the grace is the same open`() = runTest {
+        val s = limit(AppLimit(app, dailyOpens = 2))
+        opened(s, 10)
+        opened(s, 600)
+        PauseLedger.enter(s)
+        PauseLedger.onForeground("com.google.android.apps.messaging", clock.millis() - 20_000)
+        PauseLedger.onForeground(s, clock.millis())
+        val events = listOf(fg(10), bg(15), fg(600))
+        assertThat(gate(events = events).decide(app)).isEqualTo(LimitDecision.Allow)
+    }
+
+    @Test
+    fun `back after the grace is a new open, and there are none left`() = runTest {
+        val s = limit(AppLimit(app, dailyOpens = 2))
+        opened(s, 10)
+        opened(s, 600)
+        PauseLedger.enter(s)
+        PauseLedger.onForeground("com.android.launcher", dayStartMillis + 605 * minute)
+        val events = listOf(fg(10), bg(15), fg(600), bg(605))
+        val decision = gate(events = events).decide(app) as LimitDecision.Blocked
+        assertThat(decision.reason).isEqualTo(LimitReason.DAILY_OPENS)
+    }
+
+    @Test
+    fun `inside still respects a spent minute budget`() = runTest {
+        val s = limit(AppLimit(app, limitMode = LimitMode.TIME, dailyMinutes = 30))
+        opened(s, 600)
+        PauseLedger.enter(s)
+        val decision = gate(events = listOf(fg(600))).decide(app) as LimitDecision.Blocked
+        assertThat(decision.reason).isEqualTo(LimitReason.DAILY_TIME)
+    }
+
+    @Test
+    fun `a limit with a session length ignores inside - the session is the open`() = runTest {
+        // Session from 600 ran out at 610; being marked inside must not wave
+        // the user back in for a fresh one.
+        val s = limit(AppLimit(app, sessionMinutes = 10, preOpenDelaySeconds = 30))
+        opened(s, 600)
+        PauseLedger.enter(s)
+        assertThat(gate(events = listOf(fg(600), bg(608))).decide(app)).isEqualTo(LimitDecision.Pause(30))
+    }
+
+    @Test
+    fun `THE BUG - closing from the pause costs no open`() = runTest {
+        db.appLimitDao().upsert(AppLimit(app, dailyOpens = 1))
+        val flashAt = dayStartMillis + 650 * minute
+        val flash = listOf(
+            UsageEvent(app, UsageEvent.Type.FOREGROUND, flashAt),
+            UsageEvent(app, UsageEvent.Type.BACKGROUND, flashAt + 300),
+        )
+        val gate = gate(events = flash)
+        assertThat(gate.summaryFor(app).opens).isEqualTo(0)
+        assertThat(gate.decide(app)).isEqualTo(LimitDecision.Pause(0))
+    }
+
+    @Test
+    fun `THE BUG - closing from the pause starts no cooldown`() = runTest {
+        db.appLimitDao().upsert(AppLimit(app, cooldownMinutes = 30))
+        val flashAt = dayStartMillis + 655 * minute
+        val flash = listOf(
+            UsageEvent(app, UsageEvent.Type.FOREGROUND, flashAt),
+            UsageEvent(app, UsageEvent.Type.BACKGROUND, flashAt + 300),
+        )
+        assertThat(gate(events = flash).decide(app)).isEqualTo(LimitDecision.Pause(0))
+    }
+
+    @Test
+    fun `THE BUG, second launch - closing from the pause after an earlier open starts no cooldown`() = runTest {
+        // Opened at 600, left at 610: the cooldown ran out at 640. A launch at
+        // 650 was closed from the pause; it must not restart the cooldown.
+        val s = limit(AppLimit(app, cooldownMinutes = 30))
+        opened(s, 600)
+        val flashAt = dayStartMillis + 650 * minute
+        val events = listOf(
+            fg(600), bg(610),
+            UsageEvent(app, UsageEvent.Type.FOREGROUND, flashAt),
+            UsageEvent(app, UsageEvent.Type.BACKGROUND, flashAt + 300),
+        )
+        assertThat(gate(events = events).decide(app)).isEqualTo(LimitDecision.Pause(0))
+    }
+
+    @Test
+    fun `a recorded open counts at once`() = runTest {
+        val s = limit(AppLimit(app, dailyOpens = 1))
+        gate().recordOpen(app, s)
+        val decision = gate().decide(app) as LimitDecision.Blocked
+        assertThat(decision.reason).isEqualTo(LimitReason.DAILY_OPENS)
+    }
     // --- Cooldown ---
 
     @Test
     fun `blocked during the cooldown after closing`() = runTest {
-        db.appLimitDao().upsert(AppLimit(app, cooldownMinutes = 30))
+        val s = limit(AppLimit(app, cooldownMinutes = 30))
+        opened(s, 600)
         val decision = gate(events = listOf(fg(600), bg(650))).decide(app)
 
         assertThat(decision).isInstanceOf(LimitDecision.Blocked::class.java)
@@ -196,7 +355,8 @@ class LimitGateTest {
 
     @Test
     fun `the cooldown block reports when the app becomes available`() = runTest {
-        db.appLimitDao().upsert(AppLimit(app, cooldownMinutes = 30))
+        val s = limit(AppLimit(app, cooldownMinutes = 30))
+        opened(s, 600)
         val decision = gate(events = listOf(fg(600), bg(650))).decide(app) as LimitDecision.Blocked
 
         assertThat(decision.resetsAtMillis).isEqualTo(dayStartMillis + 680 * minute)
@@ -204,7 +364,8 @@ class LimitGateTest {
 
     @Test
     fun `allowed once the cooldown has elapsed`() = runTest {
-        db.appLimitDao().upsert(AppLimit(app, cooldownMinutes = 30))
+        val s = limit(AppLimit(app, cooldownMinutes = 30))
+        opened(s, 560)
         assertThat(gate(events = listOf(fg(560), bg(600))).decide(app)).isEqualTo(LimitDecision.Pause(0))
     }
 
@@ -242,7 +403,8 @@ class LimitGateTest {
 
     @Test
     fun `a fresh launch after an old open pays the cooldown and open`() = runTest {
-        db.appLimitDao().upsert(AppLimit(app, sessionMinutes = 10, cooldownMinutes = 30))
+        val s = limit(AppLimit(app, sessionMinutes = 10, cooldownMinutes = 30))
+        opened(s, 640)
         // Left at 645, launched again at 660 (logged). 660 - 640 > 10 min window.
         val decision = gate(events = listOf(fg(640), bg(645), fg(660))).decide(app)
         assertThat((decision as LimitDecision.Blocked).reason).isEqualTo(LimitReason.COOLDOWN)
@@ -265,7 +427,9 @@ class LimitGateTest {
     @Test
     fun `once the pause is served, the return no longer costs an open`() = runTest {
         // dailyOpens is already spent, so only a rejoin can let this through.
-        val subject = limit(AppLimit(app, sessionMinutes = 10, dailyOpens = 1))
+        val subject = limit(AppLimit(app, sessionMinutes = 10, dailyOpens = 2))
+        opened(subject, 100)
+        opened(subject, 655)
         PauseLedger.begin(subject)
         PauseLedger.complete(subject, clock.millis())
 
@@ -276,7 +440,7 @@ class LimitGateTest {
     // --- What counts as an open worth rejoining ---
 
     @Test
-    fun `a launch blip is not an established open`() = runTest {
+    fun `a launch flash is not an open`() = runTest {
         // Launching an app emits foreground then background a fraction of a
         // second later. Treating that as "left and returned" waved the pause
         // through on the very first open of any app with a session cap.
@@ -293,33 +457,26 @@ class LimitGateTest {
     }
 
     @Test
-    fun `an open must be running a while before a return rejoins it`() = runTest {
-        db.appLimitDao().upsert(AppLimit(app, sessionMinutes = 10, dailyOpens = 1))
+    fun `a return seconds after Continue rejoins - there is no minimum age`() = runTest {
+        val s = limit(AppLimit(app, sessionMinutes = 10, dailyOpens = 2))
         val justNow = dayStartMillis + 660 * minute
-        // Ten seconds old: under the floor, so this is a fresh open and the
-        // spent open budget applies.
-        val young = listOf(
+        opened(s, 100)
+        db.limitOpenDao().insert(LimitOpen(subject = s, packageName = app, atMillis = justNow - 10_000))
+        val events = listOf(
             fg(100), bg(110),
-            UsageEvent(app, UsageEvent.Type.FOREGROUND, justNow - 10_000),
+            UsageEvent(app, UsageEvent.Type.FOREGROUND, justNow - 9_800),
             UsageEvent(app, UsageEvent.Type.BACKGROUND, justNow - 500),
         )
-        assertThat(gate(events = young).decide(app)).isInstanceOf(LimitDecision.Blocked::class.java)
-
-        // A minute old: a real session, so returning to it is a rejoin and the
-        // second open is not charged again.
-        val established = listOf(
-            fg(100), bg(110),
-            UsageEvent(app, UsageEvent.Type.FOREGROUND, justNow - 60_000),
-            UsageEvent(app, UsageEvent.Type.BACKGROUND, justNow - 500),
-        )
-        assertThat(gate(events = established).decide(app)).isEqualTo(LimitDecision.Allow)
+        assertThat(gate(events = events).decide(app)).isEqualTo(LimitDecision.Allow)
     }
 
     @Test
     fun `a pause owed from a previous process still blocks the rejoin`() = runTest {
         // The debt is persisted precisely because the process restarts and an
         // in-memory flag would be forgotten.
-        val subject = limit(AppLimit(app, sessionMinutes = 10, dailyOpens = 1))
+        val subject = limit(AppLimit(app, sessionMinutes = 10, dailyOpens = 2))
+        opened(subject, 100)
+        opened(subject, 655)
         val settings = AnchorSettings(pausesOwed = setOf(subject))
         val events = listOf(fg(100), bg(110), fg(655), bg(658))
 
@@ -331,13 +488,16 @@ class LimitGateTest {
     @Test
     fun `returning inside the session window skips the cooldown`() = runTest {
         // 10-min sessions, 30-min cooldown. Opened at 655, left at 658, now 660.
-        db.appLimitDao().upsert(AppLimit(app, sessionMinutes = 10, cooldownMinutes = 30))
+        val s = limit(AppLimit(app, sessionMinutes = 10, cooldownMinutes = 30))
+        opened(s, 655)
         assertThat(gate(events = listOf(fg(655), bg(658))).decide(app)).isEqualTo(LimitDecision.Allow)
     }
 
     @Test
     fun `returning inside the session window is not charged an open`() = runTest {
-        db.appLimitDao().upsert(AppLimit(app, sessionMinutes = 10, dailyOpens = 1))
+        val s = limit(AppLimit(app, sessionMinutes = 10, dailyOpens = 2))
+        opened(s, 100)
+        opened(s, 655)
         // One open already spent at 100; the current one began at 655.
         val events = listOf(fg(100), bg(110), fg(655), bg(658))
         assertThat(gate(events = events).decide(app)).isEqualTo(LimitDecision.Allow)
@@ -347,7 +507,8 @@ class LimitGateTest {
     fun `a rejoin is not paused again - the pause was served on the way in`() = runTest {
         // Sat through the pause at 655, stepped out at 658, back at 660 with
         // seven minutes of the session left: the same open, straight in.
-        db.appLimitDao().upsert(AppLimit(app, sessionMinutes = 10, preOpenDelaySeconds = 30))
+        val s = limit(AppLimit(app, sessionMinutes = 10, preOpenDelaySeconds = 30))
+        opened(s, 655)
         assertThat(gate(events = listOf(fg(655), bg(658))).decide(app)).isEqualTo(LimitDecision.Allow)
     }
 
@@ -355,7 +516,8 @@ class LimitGateTest {
     fun `once the session has elapsed the next open is paused again`() = runTest {
         // Opened at 650, ten-minute session, now 660: over, even though the
         // user was only in it for two minutes. The session is wall clock.
-        db.appLimitDao().upsert(AppLimit(app, sessionMinutes = 10, preOpenDelaySeconds = 30))
+        val s = limit(AppLimit(app, sessionMinutes = 10, preOpenDelaySeconds = 30))
+        opened(s, 650)
         assertThat(gate(events = listOf(fg(650), bg(652))).decide(app)).isEqualTo(LimitDecision.Pause(30))
     }
 
@@ -363,9 +525,10 @@ class LimitGateTest {
     fun `the user's example - two minutes used, back after the session, budget intact`() = runTest {
         // 20-minute budget, 5-minute session. Two minutes in at 650, out at
         // 652, back at 660: asked again (pause), and 18 minutes still left.
-        db.appLimitDao().upsert(
+        val s = limit(
             AppLimit(app, limitMode = LimitMode.TIME, dailyMinutes = 20, sessionMinutes = 5, preOpenDelaySeconds = 20)
         )
+        opened(s, 650)
         val gate = gate(events = listOf(fg(650), bg(652)))
         assertThat(gate.decide(app)).isEqualTo(LimitDecision.Pause(20))
         assertThat(gate.budgetFor(app)).contains("18 of 20 minutes left today")
@@ -373,7 +536,8 @@ class LimitGateTest {
 
     @Test
     fun `time away does not count against the minutes budget`() = runTest {
-        db.appLimitDao().upsert(AppLimit(app, limitMode = LimitMode.TIME, dailyMinutes = 5, sessionMinutes = 10))
+        val s = limit(AppLimit(app, limitMode = LimitMode.TIME, dailyMinutes = 5, sessionMinutes = 10))
+        opened(s, 652)
         // In for two minutes, out for six, back at 660 inside the session.
         val events = listOf(fg(652), bg(654))
         assertThat(gate(events = events).decide(app)).isEqualTo(LimitDecision.Allow)
@@ -381,13 +545,16 @@ class LimitGateTest {
 
     @Test
     fun `a rejoin with no pause configured just opens`() = runTest {
-        db.appLimitDao().upsert(AppLimit(app, sessionMinutes = 10))
+        val s = limit(AppLimit(app, sessionMinutes = 10))
+        opened(s, 655)
         assertThat(gate(events = listOf(fg(655), bg(658))).decide(app)).isEqualTo(LimitDecision.Allow)
     }
 
     @Test
     fun `returning inside the session window still respects the time budget`() = runTest {
-        db.appLimitDao().upsert(AppLimit(app, sessionMinutes = 10, limitMode = LimitMode.TIME, dailyMinutes = 30))
+        val s = limit(AppLimit(app, sessionMinutes = 10, limitMode = LimitMode.TIME, dailyMinutes = 30))
+        opened(s, 100)
+        opened(s, 655)
         val events = listOf(fg(100), bg(130), fg(655), bg(658))   // 33 minutes used
         val decision = gate(events = events).decide(app)
         assertThat((decision as LimitDecision.Blocked).reason).isEqualTo(LimitReason.DAILY_TIME)
@@ -395,7 +562,8 @@ class LimitGateTest {
 
     @Test
     fun `after the session window the cooldown applies again`() = runTest {
-        db.appLimitDao().upsert(AppLimit(app, sessionMinutes = 10, cooldownMinutes = 30))
+        val s = limit(AppLimit(app, sessionMinutes = 10, cooldownMinutes = 30))
+        opened(s, 640)
         // Opened at 640, left at 645; now is 660, past 640+10.
         val decision = gate(events = listOf(fg(640), bg(645))).decide(app)
         assertThat((decision as LimitDecision.Blocked).reason).isEqualTo(LimitReason.COOLDOWN)
@@ -414,6 +582,7 @@ class LimitGateTest {
     @Test
     fun `an early lock ends the session window so a return is a new open`() = runTest {
         val subject = limit(AppLimit(app, sessionMinutes = 10, preOpenDelaySeconds = 30))
+        opened(subject, 655)
         db.earlyLockDao().insert(EarlyLock(subject = subject, atMillis = dayStartMillis + 658 * minute))
         // Would rejoin (opened at 655) if not for the lock; now it gets the pause.
         assertThat(gate(events = listOf(fg(655), bg(658))).decide(app)).isEqualTo(LimitDecision.Pause(30))
@@ -422,6 +591,7 @@ class LimitGateTest {
     @Test
     fun `an early lock starts the cooldown`() = runTest {
         val subject = limit(AppLimit(app, cooldownMinutes = 30))
+        opened(subject, 600)
         db.earlyLockDao().insert(EarlyLock(subject = subject, atMillis = dayStartMillis + 650 * minute))
         val decision = gate(events = listOf(fg(600), bg(640))).decide(app) as LimitDecision.Blocked
         assertThat(decision.reason).isEqualTo(LimitReason.COOLDOWN)
@@ -431,16 +601,40 @@ class LimitGateTest {
     @Test
     fun `the return after an early lock is a whole new open`() = runTest {
         val subject = limit(AppLimit(app, dailyOpens = 2, sessionMinutes = 30))
+        opened(subject, 100)
+        opened(subject, 110)
         db.earlyLockDao().insert(EarlyLock(subject = subject, atMillis = dayStartMillis + 105 * minute))
         // Opened at 100, locked at 105, back at 110: inside the session, but
         // the lock ended it, so that is open number two and it costs one.
         val events = listOf(fg(100), bg(105), fg(110), bg(120))
         val summary = gate(events = events).summaryFor(app)
         assertThat(summary.opens).isEqualTo(2)
-        assertThat(summary.openUnits).isEqualTo(2.0)
-        // Both opens are over, so the third launch is blocked.
+        // The locked one costs half: 1.5 of 2, and half is not enough to start one.
+        assertThat(summary.openUnits).isEqualTo(1.5)
         val decision = gate(events = events).decide(app)
         assertThat((decision as LimitDecision.Blocked).reason).isEqualTo(LimitReason.DAILY_OPENS)
+    }
+
+    @Test
+    fun `two early locks give back one open`() = runTest {
+        val subject = limit(AppLimit(app, dailyOpens = 2))
+        opened(subject, 100)
+        db.earlyLockDao().insert(EarlyLock(subject = subject, atMillis = dayStartMillis + 105 * minute))
+        opened(subject, 200)
+        db.earlyLockDao().insert(EarlyLock(subject = subject, atMillis = dayStartMillis + 205 * minute))
+        val events = listOf(fg(100), bg(105), fg(200), bg(205))
+        assertThat(gate(events = events).decide(app)).isEqualTo(LimitDecision.Pause(0))
+    }
+
+    @Test
+    fun `half an open left is not enough to start one`() = runTest {
+        val subject = limit(AppLimit(app, dailyOpens = 2))
+        opened(subject, 100)
+        db.earlyLockDao().insert(EarlyLock(subject = subject, atMillis = dayStartMillis + 105 * minute))
+        opened(subject, 200)
+        val events = listOf(fg(100), bg(105), fg(200), bg(230))
+        val decision = gate(events = events).decide(app) as LimitDecision.Blocked
+        assertThat(decision.reason).isEqualTo(LimitReason.DAILY_OPENS)
     }
 
     // --- Pre-open pause ---
@@ -463,18 +657,20 @@ class LimitGateTest {
     fun `a spent daily budget is reported ahead of a cooldown`() = runTest {
         // Otherwise the user sits out the cooldown only to be told the day
         // is over: the longer wait is the honest answer.
-        db.appLimitDao().upsert(AppLimit(app, limitMode = LimitMode.TIME, dailyMinutes = 10, cooldownMinutes = 30))
+        val s = limit(AppLimit(app, limitMode = LimitMode.TIME, dailyMinutes = 10, cooldownMinutes = 30))
         val decision = gate(events = listOf(fg(600), bg(650))).decide(app)
         assertThat((decision as LimitDecision.Blocked).reason).isEqualTo(LimitReason.DAILY_TIME)
 
         db.appLimitDao().upsert(AppLimit(app, dailyOpens = 1, cooldownMinutes = 30).copy(id = db.appLimitDao().find(app)!!.id))
+        opened(s, 600)
         val byOpens = gate(events = listOf(fg(600), bg(650))).decide(app)
         assertThat((byOpens as LimitDecision.Blocked).reason).isEqualTo(LimitReason.DAILY_OPENS)
     }
 
     @Test
     fun `a cooldown with budget left is still a cooldown`() = runTest {
-        db.appLimitDao().upsert(AppLimit(app, dailyOpens = 3, cooldownMinutes = 30))
+        val s = limit(AppLimit(app, dailyOpens = 3, cooldownMinutes = 30))
+        opened(s, 600)
         val decision = gate(events = listOf(fg(600), bg(650))).decide(app)
         assertThat((decision as LimitDecision.Blocked).reason).isEqualTo(LimitReason.COOLDOWN)
     }
@@ -486,14 +682,17 @@ class LimitGateTest {
         // Two opens, ten-minute sessions. The second session, running now,
         // just hit its cap: that was the last open, and the screen should
         // say so rather than promise a cooldown.
-        db.appLimitDao().upsert(AppLimit(app, dailyOpens = 2, sessionMinutes = 10, cooldownMinutes = 30))
+        val s = limit(AppLimit(app, dailyOpens = 2, sessionMinutes = 10, cooldownMinutes = 30))
+        opened(s, 100)
+        opened(s, 650)
         val blocked = gate(events = listOf(fg(100), bg(110), fg(650))).afterSessionCap(app) as LimitDecision.Blocked
         assertThat(blocked.reason).isEqualTo(LimitReason.DAILY_OPENS)
     }
 
     @Test
     fun `after a session with opens left, the cap screen promises the cooldown`() = runTest {
-        db.appLimitDao().upsert(AppLimit(app, dailyOpens = 3, sessionMinutes = 10, cooldownMinutes = 30))
+        val s = limit(AppLimit(app, dailyOpens = 3, sessionMinutes = 10, cooldownMinutes = 30))
+        opened(s, 650)
         val blocked = gate(events = listOf(fg(650))).afterSessionCap(app) as LimitDecision.Blocked
         assertThat(blocked.reason).isEqualTo(LimitReason.SESSION_CAP)
         assertThat(blocked.resetsAtMillis).isEqualTo(clock.millis() + 30 * minute)
@@ -517,7 +716,9 @@ class LimitGateTest {
     fun `continuing after the session is a new open`() = runTest {
         // Session 650-660 ended; the user sat the pause and came back at 660.
         // That is open number two.
-        db.appLimitDao().upsert(AppLimit(app, dailyOpens = 5, sessionMinutes = 10))
+        val s = limit(AppLimit(app, dailyOpens = 5, sessionMinutes = 10))
+        opened(s, 650)
+        opened(s, 660)
         val summary = gate(events = listOf(fg(650), bg(659), fg(660))).summaryFor(app)
         assertThat(summary.opens).isEqualTo(2)
     }
@@ -553,17 +754,22 @@ class LimitGateTest {
     fun `the budget counts only what happened inside the hours`() = runTest {
         // Two opens at 09:00 and 10:00 (before the 14:00 window) do not
         // count; one at 14:30 does. Budget of two: still one left.
-        db.appLimitDao().upsert(AppLimit(app, dailyOpens = 2).copy(windowStartMinute = 14 * 60, windowEndMinute = 17 * 60))
+        val s = limit(AppLimit(app, dailyOpens = 2).copy(windowStartMinute = 14 * 60, windowEndMinute = 17 * 60))
+        opened(s, 300)
+        opened(s, 360)
+        opened(s, 630)
         val events = listOf(fg(300), bg(310), fg(360), bg(370), fg(630), bg(640))
         assertThat(gate(events = events).decide(app)).isEqualTo(LimitDecision.Pause(0))
 
+        opened(s, 650)
         val spent = events + listOf(fg(650), bg(655))
         assertThat(gate(events = spent).decide(app)).isInstanceOf(LimitDecision.Blocked::class.java)
     }
 
     @Test
     fun `a spent windowed budget comes back at the end of the window`() = runTest {
-        db.appLimitDao().upsert(AppLimit(app, dailyOpens = 1).copy(windowStartMinute = 14 * 60, windowEndMinute = 17 * 60))
+        val s = limit(AppLimit(app, dailyOpens = 1).copy(windowStartMinute = 14 * 60, windowEndMinute = 17 * 60))
+        opened(s, 630)
         val decision = gate(events = listOf(fg(630), bg(640))).decide(app) as LimitDecision.Blocked
         val expected = LocalDateTime.parse("2026-09-09T17:00:00").atZone(zone).toInstant().toEpochMilli()
         assertThat(decision.resetsAtMillis).isEqualTo(expected)
@@ -571,7 +777,10 @@ class LimitGateTest {
 
     @Test
     fun `one app can have different budgets at different hours`() = runTest {
-        db.appLimitDao().upsert(AppLimit(app, dailyOpens = 5).copy(windowStartMinute = 9 * 60, windowEndMinute = 14 * 60))
+        val s = limit(AppLimit(app, dailyOpens = 5).copy(windowStartMinute = 9 * 60, windowEndMinute = 14 * 60))
+        opened(s, 300)
+        opened(s, 360)
+        opened(s, 400)
         db.appLimitDao().upsert(AppLimit(app, dailyOpens = 1).copy(windowStartMinute = 14 * 60, windowEndMinute = 17 * 60))
         // Three opens this morning under the generous limit, none since 14:00.
         val events = listOf(fg(300), bg(310), fg(360), bg(370), fg(400), bg(410))
@@ -606,6 +815,8 @@ class LimitGateTest {
 
     @Test
     fun `summaryFor exposes usage for the dashboard`() = runTest {
+        val s = limit(AppLimit(app, dailyOpens = 3))
+        opened(s, 60)
         val summary = gate(events = listOf(fg(60), bg(80))).summaryFor(app)
         assertThat(summary.foregroundMillis).isEqualTo(20 * minute)
         assertThat(summary.opens).isEqualTo(1)
@@ -617,7 +828,9 @@ class LimitGateTest {
 
     @Test
     fun `apps in one group share the open budget`() = runTest {
-        db.appLimitDao().upsert(AppLimit(name = "Social", packages = setOf(app, instagram), dailyOpens = 2))
+        val s = limit(AppLimit(name = "Social", packages = setOf(app, instagram), dailyOpens = 2))
+        opened(s, 10)
+        opened(s, 60, instagram)
         val events = listOf(fg(10), bg(15), fg(60, instagram), bg(65, instagram))
         assertThat(gate(events = events).decide(app)).isInstanceOf(LimitDecision.Blocked::class.java)
         assertThat(gate(events = events).decide(instagram)).isInstanceOf(LimitDecision.Blocked::class.java)
@@ -627,20 +840,24 @@ class LimitGateTest {
     fun `apps in one group share the session`() = runTest {
         // YouTube's session began at 648 and is over by 660; Instagram is a
         // fresh open of the group and pays the pause.
-        db.appLimitDao().upsert(
+        val s = limit(
             AppLimit(name = "Social", packages = setOf(app, instagram), sessionMinutes = 10, preOpenDelaySeconds = 30)
         )
+        opened(s, 648)
         assertThat(gate(events = listOf(fg(648), bg(658))).decide(instagram)).isEqualTo(LimitDecision.Pause(30))
 
         // YouTube's session began at 655: switching to Instagram rejoins it.
+        opened(s, 655)
         assertThat(gate(events = listOf(fg(655), bg(658))).decide(instagram)).isEqualTo(LimitDecision.Allow)
     }
 
     @Test
     fun `the user's example - two opens of ten minutes across two apps`() = runTest {
-        db.appLimitDao().upsert(
+        val s = limit(
             AppLimit(name = "Social", packages = setOf(app, instagram), dailyOpens = 2, sessionMinutes = 10)
         )
+        opened(s, 100)
+        opened(s, 300, instagram)
         // Open 1: ten minutes of YouTube. Open 2: five of Instagram, five of
         // YouTube. Both sessions spent; a third open is one too many.
         val events = listOf(
@@ -678,6 +895,7 @@ class LimitGateTest {
     @Test
     fun `a bypass also silences the session cap`() = runTest {
         val subject = limit(AppLimit(app, sessionMinutes = 10))
+        opened(subject, 655)
         val settings = AnchorSettings(limitBypasses = setOf(Streak.bypassKey(subject, "2026-09-09")))
         assertThat(gate(events = listOf(fg(655)), settings = settings).sessionRemainingMillis(app)).isNull()
         assertThat(gate(events = listOf(fg(655))).sessionRemainingMillis(app)).isEqualTo(5 * minute)
@@ -687,8 +905,10 @@ class LimitGateTest {
 
     @Test
     fun `summaries reads the event log once for every limit`() = runTest {
-        db.appLimitDao().upsert(AppLimit(app, dailyOpens = 3))
-        db.appLimitDao().upsert(AppLimit(instagram, dailyOpens = 3))
+        val a = limit(AppLimit(app, dailyOpens = 3))
+        val b = limit(AppLimit(instagram, dailyOpens = 3))
+        opened(a, 10)
+        opened(b, 20, instagram)
         var reads = 0
         val gate = gate(source = object : UsageStatsSource {
             override suspend fun events(fromMillis: Long, toMillis: Long): List<UsageEvent> {
@@ -703,7 +923,8 @@ class LimitGateTest {
 
     @Test
     fun `dashboard usage breaks a group down per app and reads the log once`() = runTest {
-        db.appLimitDao().upsert(AppLimit(name = "Social", packages = setOf(app, instagram), dailyOpens = 3, sessionMinutes = 30))
+        val s = limit(AppLimit(name = "Social", packages = setOf(app, instagram), dailyOpens = 3, sessionMinutes = 30))
+        opened(s, 10)
         var reads = 0
         val gate = gate(source = object : UsageStatsSource {
             override suspend fun events(fromMillis: Long, toMillis: Long): List<UsageEvent> {
@@ -717,12 +938,15 @@ class LimitGateTest {
         assertThat(usage.summary.foregroundMillis).isEqualTo(15 * minute)
         assertThat(usage.perApp.getValue(app).foregroundMillis).isEqualTo(5 * minute)
         assertThat(usage.perApp.getValue(instagram).foregroundMillis).isEqualTo(10 * minute)
+        assertThat(usage.perApp.getValue(app).opens).isEqualTo(1)
+        assertThat(usage.perApp.getValue(instagram).opens).isEqualTo(0)
         assertThat(usage.status).isEqualTo(LimitStatus.Available)
     }
 
     @Test
     fun `dashboard usage reports a running session`() = runTest {
-        db.appLimitDao().upsert(AppLimit(app, dailyOpens = 3, sessionMinutes = 30))
+        val s = limit(AppLimit(app, dailyOpens = 3, sessionMinutes = 30))
+        opened(s, 650)
         // 15:00 is 660 minutes after 04:00; the open began ten minutes ago.
         val usage = gate(events = listOf(fg(650))).dashboardUsage().single()
         assertThat(usage.status)

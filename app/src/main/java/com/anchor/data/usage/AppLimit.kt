@@ -99,7 +99,7 @@ data class AppLimit(
      * The key every ledger uses for this limit: pauses owed, early locks,
      * streak bypasses. By id, so a group's members share one debt.
      */
-    val subject: String get() = "limit:$id"
+    val subject: String get() = "$SUBJECT_PREFIX$id"
 
     operator fun contains(packageName: String): Boolean = packageName in packages
 
@@ -121,4 +121,9 @@ data class AppLimit(
     /** A blank slate for the picker: every app it lists must be free at these times. */
     fun clashesWith(other: AppLimit): Boolean =
         other.id != id && other.packages.any { it in packages } && overlapsInTime(other)
+
+    companion object {
+        /** What every limit's [subject] starts with; a bare package name never does. */
+        const val SUBJECT_PREFIX = "limit:"
+    }
 }
