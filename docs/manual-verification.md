@@ -266,6 +266,15 @@ emulator whose location updates.
    appears, not the limit screen with "Open anyway".
 7. Flip the HA kill switch: the app opens.
 
+## 7m. The kill switch and the floating lock button
+
+1. With a limited app open and the button showing, turn the kill switch on in
+   Home Assistant. Switch away and back: verify the button is gone and no
+   pause appears.
+2. Turn the kill switch off. Switch away for over a minute and back: verify the
+   pause appears (you were not left inside an open), and after Continue the
+   button is back and "Lock it" works.
+
 ## 7l. Opens count when the pause lets you in
 
 Not yet run on the emulator: the test machine was short of disk space when this

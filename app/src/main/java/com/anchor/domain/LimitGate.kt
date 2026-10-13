@@ -37,6 +37,14 @@ sealed interface LimitDecision {
     data object Allow : LimitDecision
 
     /**
+     * The app has a limit, but it is off right now: the kill switch is on,
+     * or it was walked through today in streak mode. Nothing is asked, and
+     * unlike [Allow] it is not an open: no floating lock button, and the
+     * user is not inside one when the waiver ends.
+     */
+    data object Waived : LimitDecision
+
+    /**
      * Ask before the app opens: a countdown of this many seconds, or, at
      * zero, a plain question with Continue available at once. Every launch
      * of a limited app that is not a rejoin and not blocked is asked.
@@ -101,8 +109,8 @@ class LimitGate @Inject constructor(
         val limit = limitFor(packageName)?.takeIf { it.isActive } ?: return LimitDecision.Allow
 
         val settings = settingsProvider()
-        if (killSwitch.blockingDisabled(settings)) return LimitDecision.Allow
-        if (isBypassed(limit, settings)) return LimitDecision.Allow
+        if (killSwitch.blockingDisabled(settings)) return LimitDecision.Waived
+        if (isBypassed(limit, settings)) return LimitDecision.Waived
 
         val now = anchorDate.nowMillis()
         val usage = summarize(limit, settings, now)

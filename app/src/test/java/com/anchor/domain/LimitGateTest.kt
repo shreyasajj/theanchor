@@ -789,7 +789,7 @@ class LimitGateTest {
     }
 
     @Test
-    fun `an active kill switch allows everything through`() = runTest {
+    fun `an active kill switch waives the limit`() = runTest {
         db.appLimitDao().upsert(AppLimit(app, limitMode = LimitMode.TIME, dailyMinutes = 1))
         val settings = AnchorSettings(
             haBaseUrl = "http://ha.local:8123",
@@ -804,7 +804,7 @@ class LimitGateTest {
             haResult = HaResult.Ok(HaStateDto("e", "on", emptyMap())),
         ).decide(app)
 
-        assertThat(decision).isEqualTo(LimitDecision.Allow)
+        assertThat(decision).isEqualTo(LimitDecision.Waived)
     }
 
     @Test
@@ -881,7 +881,7 @@ class LimitGateTest {
         val subject = limit(AppLimit(app, limitMode = LimitMode.TIME, dailyMinutes = 10))
         val settings = AnchorSettings(limitBypasses = setOf(Streak.bypassKey(subject, "2026-09-09")))
         assertThat(gate(events = listOf(fg(60), bg(120)), settings = settings).decide(app))
-            .isEqualTo(LimitDecision.Allow)
+            .isEqualTo(LimitDecision.Waived)
     }
 
     @Test
