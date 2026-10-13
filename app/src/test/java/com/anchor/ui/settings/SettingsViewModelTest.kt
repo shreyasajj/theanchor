@@ -3,6 +3,7 @@ package com.anchor.ui.settings
 import com.anchor.data.usage.LimitMode
 import android.content.Context
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.lifecycle.viewModelScope
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.anchor.awaitUntil
@@ -21,6 +22,8 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.job
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
@@ -41,6 +44,7 @@ class SettingsViewModelTest {
     private lateinit var repo: SettingsRepository
     @Volatile private var rescheduleCount = 0
     private val youtube = "com.google.android.youtube"
+    private val viewModels = mutableListOf<SettingsViewModel>()
 
     @Before
     fun setUp() {
@@ -52,11 +56,20 @@ class SettingsViewModelTest {
         repo = SettingsRepository(
             PreferenceDataStoreFactory.create(scope = CoroutineScope(Dispatchers.IO + SupervisorJob())) { file }
         )
+        // Write the file once up front. DataStore's first write renames the file
+        // into place, and a read racing that rename throws FileNotFoundException
+        // instead of returning defaults. Later writes replace an existing file.
+        runBlocking { repo.update { it } }
         rescheduleCount = 0
     }
 
     @After
     fun tearDown() {
+        // Stop each ViewModel's eager Room collectors, and wait for any query in
+        // flight, before closing the database. Otherwise a query lands on the
+        // closed pool and its exception fails whichever test runs next.
+        runBlocking { viewModels.forEach { it.viewModelScope.coroutineContext.job.cancelAndJoin() } }
+        viewModels.clear()
         db.close()
         file.delete()
         Dispatchers.resetMain()
@@ -70,7 +83,7 @@ class SettingsViewModelTest {
         appLimitDao = db.appLimitDao(),
         onScheduleChanged = { rescheduleCount++ },
         currentFix = currentFix,
-    )
+    ).also { viewModels += it }
 
     @Test
     fun `exposes the current settings`() = runTest {
