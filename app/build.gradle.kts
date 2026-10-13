@@ -126,4 +126,16 @@ dependencies {
     testImplementation(libs.room.testing)
     testImplementation(libs.okhttp.mockwebserver)
     testImplementation(libs.kotlinx.coroutines.test)
+
+    // AGP's lint tool (lint-gradle) resolves its own classpath, which the root
+    // build.gradle.kts constraints don't reach, and it brings in versions with
+    // published security advisories. It runs only on the build machine; raise
+    // them here for the same reason as there.
+    constraints {
+        add("androidLintTool", libs.buildscript.bcprov)
+        add("androidLintTool", libs.buildscript.bcpkix)
+        add("androidLintTool", libs.buildscript.bcutil)
+        add("androidLintTool", libs.buildscript.commons.lang3)
+        add("androidLintTool", libs.buildscript.httpclient)
+    }
 }
