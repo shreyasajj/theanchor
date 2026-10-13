@@ -37,6 +37,7 @@ import com.anchor.ui.lock.PauseActivity
 import com.anchor.ui.lock.PauseCoalescing
 import com.anchor.ui.lock.SessionEndScreens
 import dagger.hilt.android.AndroidEntryPoint
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -70,12 +71,21 @@ object LimitRouting {
             Route.Pause(PauseCoalescing.secondsFor(evening, limit), countsAsOpen = limit is LimitDecision.Pause)
         else -> Route.None
     }
+
+    /**
+     * Whether letting the app through puts the user inside an open. Only
+     * when the limit itself let them in: a waiver (kill switch, streak
+     * walk-through) is not an open, and treating it as one left the user
+     * inside after the switch went off, never asked again.
+     */
+    fun entersOpen(decision: LimitDecision): Boolean = decision is LimitDecision.Allow
 }
 
 /** Whether the relock button belongs on screen for the app in front. */
 object RelockButton {
-    fun shouldShowFor(limit: AppLimit?, enabledInSettings: Boolean = true): Boolean =
-        enabledInSettings && limit != null && limit.isActive
+    /** @param enforced false while the limit is waived: there is nothing to lock early. */
+    fun shouldShowFor(limit: AppLimit?, enabledInSettings: Boolean = true, enforced: Boolean = true): Boolean =
+        enabledInSettings && limit != null && limit.isActive && enforced
 }
 
 /**
@@ -147,6 +157,14 @@ class AnchorAccessibilityService : AccessibilityService() {
 
     /** The most recent non-system foreground package, for the relock button. */
     @Volatile private var lastForegroundPackage: String? = null
+
+    /**
+     * Limits the gate last found waived (kill switch on, or walked through
+     * today). The relock button stays hidden for them between decisions, so
+     * hiding it costs no Home Assistant call of its own; the next decision,
+     * on the next app switch, brings it back once the waiver ends.
+     */
+    private val waivedSubjects: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
     /**
      * Our own floating lock button, rather than Android's accessibility
@@ -296,7 +314,9 @@ class AnchorAccessibilityService : AccessibilityService() {
                     val target = action.packageName
                     lastForegroundPackage = target
                     val limit = limitGate.limitFor(target)
-                    if (RelockButton.shouldShowFor(limit, settings.showRelockBubble)) {
+                    val subject = PauseSubject.of(target, limit)
+                    val enforced = subject !in waivedSubjects
+                    if (RelockButton.shouldShowFor(limit, settings.showRelockBubble, enforced)) {
                         relockBubble.show(target)
                     } else {
                         relockBubble.hide()
@@ -308,7 +328,6 @@ class AnchorAccessibilityService : AccessibilityService() {
                     bedroomWatcher.onForegroundApp(target)
 
                     val now = System.currentTimeMillis()
-                    val subject = PauseSubject.of(target, limit)
 
                     // Anything else in front steps away from the open the
                     // user was inside; coming back within the grace returns.
@@ -338,6 +357,7 @@ class AnchorAccessibilityService : AccessibilityService() {
 
                     // Limits first: a spent budget outranks the evening ritual.
                     val decision = limitGate.decide(target)
+                    if (decision is LimitDecision.Waived) waivedSubjects += subject else waivedSubjects -= subject
                     val evening = if (decision is LimitDecision.Blocked) {
                         EveningDecision.Allow(SkipReason.NOT_IN_SCOPE)   // not consulted
                     } else {
@@ -345,7 +365,16 @@ class AnchorAccessibilityService : AccessibilityService() {
                     }
 
                     when (val route = LimitRouting.route(decision, evening)) {
-                        is Route.None -> PauseLedger.enter(subject)
+                        is Route.None -> {
+                            if (LimitRouting.entersOpen(decision)) PauseLedger.enter(subject)
+                            // The waiver may have just started or ended with
+                            // the app in front: put the button right.
+                            if (RelockButton.shouldShowFor(limit, settings.showRelockBubble, decision !is LimitDecision.Waived)) {
+                                relockBubble.show(target)
+                            } else {
+                                relockBubble.hideNow()
+                            }
+                        }
                         is Route.StrictEvening -> {
                             relockBubble.hideNow()
                             launchLock(EveningLockActivity::class.java, target)

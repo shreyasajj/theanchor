@@ -73,7 +73,9 @@ front by the log", so discounting it would let a spent budget through.
 Instead the app remembers, in memory, which limit the user is **inside**:
 
 - **Entered** when a limited app reaches the front and is let through: while
-  the pause is satisfied, or when the gate answers `Allow`.
+  the pause is satisfied, or when the gate answers `Allow`. Not when it
+  answers `Waived` (kill switch on, or walked through today): that is not an
+  open, and entering on it left the user inside after the switch went off.
 - **Stepped away** when any other subject reaches the front (another app,
   the launcher, the in-call screen). Coming back within the **60s return
   grace** (`PauseLedger.RETURN_GRACE_MILLIS`), counted from the first step

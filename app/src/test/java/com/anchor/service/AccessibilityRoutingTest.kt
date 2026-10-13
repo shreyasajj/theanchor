@@ -19,6 +19,21 @@ class AccessibilityRoutingTest {
     }
 
     @Test
+    fun `a waived limit asks nothing, but the evening delay still can`() {
+        assertThat(LimitRouting.route(LimitDecision.Waived, allowEvening)).isEqualTo(Route.None)
+        assertThat(LimitRouting.route(LimitDecision.Waived, EveningDecision.SimpleDelay))
+            .isEqualTo(Route.Pause(5, countsAsOpen = false))
+    }
+
+    @Test
+    fun `only the limit letting you in enters an open - a waiver does not`() {
+        // Let through by the kill switch, then the switch goes off: you must
+        // not still be inside an open you never chose.
+        assertThat(LimitRouting.entersOpen(LimitDecision.Allow)).isTrue()
+        assertThat(LimitRouting.entersOpen(LimitDecision.Waived)).isFalse()
+    }
+
+    @Test
     fun `every Allow reason routes nowhere`() {
         SkipReason.entries.forEach { reason ->
             assertThat(LimitRouting.route(LimitDecision.Allow, EveningDecision.Allow(reason))).isEqualTo(Route.None)

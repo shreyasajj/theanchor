@@ -24,6 +24,13 @@ class RelockBubbleTest {
         assertThat(RelockButton.shouldShowFor(limited, enabledInSettings = true)).isTrue()
     }
 
+    @Test
+    fun `it hides while the limit is waived - kill switch or streak walk-through`() {
+        val limited = AppLimit("com.x", sessionMinutes = 10)
+        assertThat(RelockButton.shouldShowFor(limited, enforced = false)).isFalse()
+        assertThat(RelockButton.shouldShowFor(limited, enforced = true)).isTrue()
+    }
+
     // --- Tap against drag ---
 
     @Test
