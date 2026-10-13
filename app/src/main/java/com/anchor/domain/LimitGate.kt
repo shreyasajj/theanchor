@@ -8,6 +8,8 @@ import com.anchor.data.usage.AppLimitDao
 import com.anchor.data.usage.AppUsageSummary
 import com.anchor.data.usage.EarlyLock
 import com.anchor.data.usage.EarlyLockDao
+import com.anchor.data.usage.LimitOpen
+import com.anchor.data.usage.LimitOpenDao
 import com.anchor.data.usage.UsageCalculator
 import com.anchor.data.usage.UsageEvent
 import com.anchor.data.usage.UsageEventMapping
@@ -101,6 +103,7 @@ class CachedLimitLookup(dao: AppLimitDao, scope: CoroutineScope) : LimitLookup {
 class LimitGate @Inject constructor(
     private val limits: LimitLookup,
     private val earlyLockDao: EarlyLockDao,
+    private val limitOpenDao: LimitOpenDao,
     private val usageStatsSource: UsageStatsSource,
     private val killSwitch: KillSwitch,
     private val anchorDate: AnchorDate,
@@ -201,6 +204,20 @@ class LimitGate @Inject constructor(
         earlyLockDao.insert(EarlyLock(subject = limit.subject, atMillis = now))
         PauseLedger.ignoreAfterEarlyLock(limit.subject, now)
         return true
+    }
+
+    /**
+     * The pause let the user into [packageName]: that is the open. Nothing is
+     * recorded for a subject that is not a limit (an evening-only pause).
+     * Old opens and early locks are pruned here, the one place both grow.
+     */
+    suspend fun recordOpen(packageName: String, subject: String) {
+        if (!subject.startsWith(AppLimit.SUBJECT_PREFIX)) return
+        val now = anchorDate.nowMillis()
+        limitOpenDao.insert(LimitOpen(subject = subject, packageName = packageName, atMillis = now))
+        val cutoff = now - PRUNE_AFTER_MILLIS
+        limitOpenDao.prune(cutoff)
+        earlyLockDao.prune(cutoff)
     }
 
     /** The limit in force for [packageName] right now, if any. */
@@ -397,4 +414,9 @@ class LimitGate @Inject constructor(
         ),
         lastEarlyLock = earlyLocks.lastOrNull(),
     )
+
+    companion object {
+        /** Comfortably past the 6h lookback any decision reads. */
+        const val PRUNE_AFTER_MILLIS = 48L * 60 * 60 * 1000
+    }
 }

@@ -153,6 +153,13 @@ object AppModule {
             runCatching { SafDocumentStore(context, Uri.parse(treeUri)) }.getOrNull()
         }
 
+    // --- Background work ---
+
+    @Provides
+    @Singleton
+    @ApplicationScope
+    fun provideApplicationScope(): CoroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
     // --- Usage ---
 
     @Provides

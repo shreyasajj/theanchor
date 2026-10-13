@@ -23,10 +23,13 @@ import androidx.lifecycle.lifecycleScope
 import com.anchor.data.settings.SettingsRepository
 import com.anchor.data.usage.MeditationSession
 import com.anchor.data.usage.MeditationSessionDao
+import com.anchor.di.ApplicationScope
 import com.anchor.domain.AnchorDate
+import com.anchor.domain.LimitGate
 import com.anchor.domain.PauseLedger
 import com.anchor.ui.theme.AnchorTheme
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -43,6 +46,8 @@ class MeditationActivity : ComponentActivity() {
     @Inject lateinit var sessionDao: MeditationSessionDao
     @Inject lateinit var anchorDate: AnchorDate
     @Inject lateinit var settingsRepository: SettingsRepository
+    @Inject lateinit var limitGate: LimitGate
+    @Inject @ApplicationScope lateinit var appScope: CoroutineScope
 
     private var blockedPackage: String? = null
 
@@ -140,9 +145,11 @@ class MeditationActivity : ComponentActivity() {
     /** Sitting served the pause, so going in now is allowed. */
     private fun openAnyway() {
         resolved = true
-        subject?.let {
-            PauseLedger.complete(it, System.currentTimeMillis())
-            lifecycleScope.launch { settingsRepository.settlePause(it) }
+        subject?.let { subject ->
+            PauseLedger.complete(subject, System.currentTimeMillis())
+            lifecycleScope.launch { settingsRepository.settlePause(subject) }
+            // Going in after the sit is the open, as Continue would be.
+            blockedPackage?.let { pkg -> appScope.launch { limitGate.recordOpen(pkg, subject) } }
         }
         finish()
     }

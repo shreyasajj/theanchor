@@ -11,6 +11,7 @@ import com.anchor.data.ha.KillSwitch
 import com.anchor.data.settings.AnchorSettings
 import com.anchor.data.usage.AppLimit
 import com.anchor.data.usage.EarlyLock
+import com.anchor.data.usage.LimitOpen
 import com.anchor.data.usage.UsageEvent
 import com.anchor.data.usage.UsageStatsSource
 import com.google.common.truth.Truth.assertThat
@@ -77,11 +78,39 @@ class LimitGateTest {
         return LimitGate(
             limits = DaoLimitLookup(db.appLimitDao()),
             earlyLockDao = db.earlyLockDao(),
+            limitOpenDao = db.limitOpenDao(),
             usageStatsSource = source,
             killSwitch = KillSwitch(client),
             anchorDate = AnchorDate(clock),
             settingsProvider = { settings },
         )
+    }
+
+    // --- Recording opens ---
+
+    @Test
+    fun `recordOpen writes for a limit and ignores an evening-only pause`() = runTest {
+        val subject = limit(AppLimit(app, dailyOpens = 3))
+        val gate = gate()
+
+        gate.recordOpen(app, subject)
+        gate.recordOpen(app, app)
+
+        assertThat(db.limitOpenDao().since(subject, 0).map { it.atMillis }).containsExactly(clock.millis())
+        assertThat(db.limitOpenDao().since(app, 0)).isEmpty()
+    }
+
+    @Test
+    fun `recordOpen prunes opens and early locks older than two days`() = runTest {
+        val subject = limit(AppLimit(app, dailyOpens = 3))
+        val old = clock.millis() - LimitGate.PRUNE_AFTER_MILLIS - 1
+        db.limitOpenDao().insert(LimitOpen(subject = subject, packageName = app, atMillis = old))
+        db.earlyLockDao().insert(EarlyLock(subject = subject, atMillis = old))
+
+        gate().recordOpen(app, subject)
+
+        assertThat(db.limitOpenDao().since(subject, 0).map { it.atMillis }).containsExactly(clock.millis())
+        assertThat(db.earlyLockDao().since(subject, 0)).isEmpty()
     }
 
     // --- No configuration ---

@@ -39,12 +39,14 @@ import androidx.lifecycle.lifecycleScope
 import com.anchor.domain.EveningDecision
 import com.anchor.domain.LimitDecision
 import com.anchor.data.settings.SettingsRepository
+import com.anchor.di.ApplicationScope
 import com.anchor.domain.LimitGate
 import com.anchor.domain.PauseLedger
 import com.anchor.ui.components.Eyebrow
 import com.anchor.ui.components.Hint
 import com.anchor.ui.theme.AnchorTheme
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -93,6 +95,7 @@ class PauseActivity : ComponentActivity() {
 
     @Inject lateinit var limitGate: LimitGate
     @Inject lateinit var settingsRepository: SettingsRepository
+    @Inject @ApplicationScope lateinit var appScope: CoroutineScope
 
     private var completed = false
     private lateinit var blockedPackage: String
@@ -211,6 +214,8 @@ class PauseActivity : ComponentActivity() {
         completed = true
         PauseLedger.complete(subject, System.currentTimeMillis())
         lifecycleScope.launch { settingsRepository.settlePause(subject) }
+        // Being let in is the open. On the app scope: finish() would cancel it here.
+        appScope.launch { limitGate.recordOpen(blockedPackage, subject) }
         finish()
     }
 
